@@ -20,7 +20,7 @@ The result: faculty distrust student work, students distrust detection tools, an
 
 ## The Solution
 
-IntegriLearn takes a fundamentally different approach. Instead of detecting AI after submission, we intervene at the moment of submission and verify comprehension in real time.
+Intel Guard takes a fundamentally different approach. Instead of detecting AI after submission, we intervene at the moment of submission and verify comprehension in real time.
 
 ### How It Works
 
@@ -36,7 +36,7 @@ IntegriLearn takes a fundamentally different approach. Instead of detecting AI a
 6. **Fail = flag + retry.** The submission is flagged for the instructor's dashboard, and the student can review the material and retry.
 
 7. **This is not to punish students, but to make sure they understand what they submit**
-8. **if the faculty decides not to quiz students they could also have them read through an AI generated explaination of thir submission**
+8. **If the faculty decides not to quiz students, they could also have them read through an AI-generated explanation of their submission**
 
 ### Key Differentiator
 
@@ -60,16 +60,23 @@ Intel Guard does not ban AI. It does not accuse students of cheating. It simply 
 
 ![Intel Guard Flow](IMG_6229.png)
 
-### Extension Components
+### What's Built Now
+
+- **Python FastAPI backend** running locally with the following endpoints:
+  - Upload assignment specs (the "context" that grounds all AI calls)
+  - AI detection using a 7-layer heuristic prompt (content, vocabulary, grammar, formatting, chatbot artifacts, "soulless but clean" test, code-specific signals)
+  - Comprehension quiz generation + answer evaluation
+  - Submission summarization as an alternative to quizzing
+  - Combined `/submit` endpoint that orchestrates the full flow in one call
+- **LLM-agnostic** — swap between OpenAI, Anthropic, or Gemini by changing one `.env` variable
+- **Cost-optimized** — dual-model routing (primary model for detection/generation, mini model for evaluation), submission caching, optional AI detection skip
+
+### Planned (Extension + Cloud)
 
 - **Content Script** — injected on whitelisted LMS domains. Monitors paste events on assignment submission forms and intercepts the submit action.
 - **Popup UI** — shows the student their comprehension check status and history.
 - **Background Service Worker** — handles communication with the Intel Guard backend, manages auth tokens, and caches quiz state.
 - **LMS Gating Token** — the extension injects a verification header/token that the LMS (configured by the university) requires for submission access. No extension = no submission.
-
-### Backend Services
-
-- **Comprehension Engine** — AI-powered service that takes pasted content + assignment context and generates targeted comprehension questions. Adapts to subject matter (code, essays, math, science) and difficulty level.
 - **LMS Integration Layer** — connects via LTI 1.3 and Canvas/Blackboard REST APIs for assignment metadata, course info, and grade passback.
 - **Analytics Pipeline** — aggregates anonymized comprehension data for instructor and admin dashboards.
 - **Auth Service** — university SSO integration (SAML 2.0, OAuth 2.0) so students log in with existing campus credentials.
@@ -78,32 +85,39 @@ Intel Guard does not ban AI. It does not accuse students of cheating. It simply 
 
 ## Business Model
 
-IntegriLearn follows the standard B2B SaaS model used across Education technologies like Turnitin, Respondus, Proctorio, HonorLock, Gradescope and many more. The university pays for it not the students.
-
-
+Intel Guard follows the standard B2B SaaS model used across education technologies like Turnitin, Respondus, Proctorio, HonorLock, Gradescope and many more. The university pays for it, not the students.
 
 ## Roadmap
 
-### Phase 1 — MVP for now
-- Chrome extension with paste detection on Canvas
-- Basic comprehension check generation (essay and code)
-- Simple instructor notification system
-- Manual university onboarding
+### Phase 1 — Local Backend (current)
+- Python FastAPI backend with AI detection, quiz, and summary endpoints
+- LLM-agnostic architecture (OpenAI / Anthropic / Gemini)
+- Cost optimizations: dual-model routing, submission caching, optional detection skip
 
+### Phase 2 — Browser Extension
+- Chrome extension with paste detection on Canvas
+- Submit button interception + comprehension check overlay
+- Communication with backend API
+
+### Phase 3 — Cloud + LMS Integration
+- Deploy backend to cloud (AWS / GCP)
+- LTI 1.3 integration with Canvas, Blackboard, Moodle
+- Instructor dashboard with comprehension trends
+- University SSO (SAML 2.0, OAuth 2.0)
 
 ## Tech Stack
 
 | Layer | Technology |
 |-------|-----------|
-| Extension | JavaScript/TypeScript, Chrome Extensions Manifest V3, WebExtensions API |
-| Frontend (Dashboard) | React, TypeScript, Tailwind CSS |
-| Backend API | Node.js / Python (FastAPI) |
-| AI / Comprehension Engine | Claude API / OpenAI API |
-| Database | PostgreSQL + Redis (caching) |
-| Auth | SAML 2.0, OAuth 2.0, JWT |
-| Infrastructure | AWS / GCP, Docker, Kubernetes |
-| LMS Integration | LTI 1.3, Canvas REST API, Blackboard REST API |
-| Monitoring | Datadog, Sentry |
+| Backend API | Python, FastAPI |
+| AI / Comprehension Engine | OpenAI / Anthropic / Gemini (provider-agnostic) |
+| Storage (current) | JSON files on disk |
+| Storage (planned) | PostgreSQL + Redis |
+| Extension (planned) | JavaScript/TypeScript, Chrome Extensions Manifest V3 |
+| Frontend Dashboard (planned) | React, TypeScript, Tailwind CSS |
+| Auth (planned) | SAML 2.0, OAuth 2.0, JWT |
+| Infrastructure (planned) | AWS / GCP, Docker |
+| LMS Integration (planned) | LTI 1.3, Canvas REST API, Blackboard REST API |
 
 ---
 
