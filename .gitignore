@@ -1,0 +1,7 @@
+.env
+__pycache__/
+*.pyc
+context_store/
+submission_cache/
+.DS_Store
+CLAUDE.md
