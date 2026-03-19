@@ -58,44 +58,7 @@ Intel Guard does not ban AI. It does not accuse students of cheating. It simply 
 
 ## Technical Architecture
 
-```
-┌─────────────────────────────────────────────────────┐
-│                  Student's Browser                   │
-│  ┌───────────────────────────────────────────────┐  │
-│  │         IntegriLearn Chrome Extension          │  │
-│  │                                                │  │
-│  │  • Content script injected on LMS domains      │  │
-│  │  • Clipboard / paste event listener            │  │
-│  │  • Submit button interception                  │  │
-│  │  • Comprehension check overlay UI              │  │
-│  │  • Auth token injection for LMS gating         │  │
-│  └──────────────────┬────────────────────────────┘  │
-└─────────────────────┼───────────────────────────────┘
-                      │ HTTPS / WebSocket
-                      ▼
-┌─────────────────────────────────────────────────────┐
-│              IntegriLearn Backend (Cloud)             │
-│                                                      │
-│  ┌──────────────┐  ┌────────────────────────────┐   │
-│  │  Auth + SSO   │  │  Comprehension Engine (AI)  │  │
-│  │  (SAML/OAuth) │  │                             │  │
-│  │               │  │  • Analyzes pasted content   │  │
-│  └──────────────┘  │  • Generates quiz questions   │  │
-│                     │  • Evaluates responses        │  │
-│  ┌──────────────┐  │  • Adapts to subject/level    │  │
-│  │ LMS Integration│ └────────────────────────────┘  │
-│  │ (Canvas API,  │                                   │
-│  │  LTI 1.3)    │  ┌────────────────────────────┐   │
-│  └──────────────┘  │  Analytics + Dashboard       │  │
-│                     │                              │  │
-│  ┌──────────────┐  │  • Per-student comprehension  │  │
-│  │  Database     │  │  • Per-course trends          │  │
-│  │  (PostgreSQL) │  │  • AI usage patterns          │  │
-│  └──────────────┘  │  • Exportable reports          │  │
-│                     └────────────────────────────┘   │
-└─────────────────────────────────────────────────────┘
-``` 
-**could also have it stored in a comment or a note for the grader**
+![Intel Guard Flow](IMG_6229.png)
 
 ### Extension Components
 
