@@ -5,4 +5,5 @@ pdfplumber
 pydantic-settings
 openai
 anthropic
+google-generativeai
 python-dotenv

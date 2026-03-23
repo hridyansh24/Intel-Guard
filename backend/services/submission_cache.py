@@ -1,7 +1,10 @@
 import hashlib
 import json
 import os
+import re
 from backend.config import settings
+
+_SAFE_HASH = re.compile(r"^[a-f0-9]+$")
 
 
 def _cache_dir() -> str:
@@ -10,7 +13,7 @@ def _cache_dir() -> str:
 
 
 def _hash_content(content: bytes) -> str:
-    return hashlib.sha256(content).hexdigest()[:12]
+    return hashlib.sha256(content).hexdigest()[:16]
 
 
 def get_cached(content: bytes) -> dict | None:
