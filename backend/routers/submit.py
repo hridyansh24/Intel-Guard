@@ -1,6 +1,6 @@
 from typing import Literal
-from fastapi import APIRouter, UploadFile, File, Form
-from backend.services.extractor import extract_text
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from backend.services.extractor import extract_text, extract_text_multi
 from backend.services.context_store import load_context
 from backend.services.llm import call_llm, call_llm_json
 from backend.prompts import AI_DETECTION_SYSTEM_PROMPT, QUIZ_GENERATION_PROMPT, SUMMARY_PROMPT
@@ -12,19 +12,22 @@ router = APIRouter(prefix="/submit", tags=["submit"])
 @router.post("/", response_model=SubmitResponse)
 async def submit(
     context_id: str = Form(...),
-    file: UploadFile = File(...),
+    files: list[UploadFile] = File(..., description="Upload 1-10 submission files"),
     mode: Literal["quiz", "summary", "both"] = Form("quiz"),
     skip_detection: bool = Form(False),
     num_questions: int = Form(3),
 ):
     """Combined endpoint: extract -> (optional) detect -> quiz/summarize.
 
-    When skip_detection=True, skips the AI detection call entirely.
-    This is the recommended mode when the instructor wants to quiz everyone
-    regardless of AI suspicion — saves ~20% on LLM costs.
+    Accepts up to 10 files. When skip_detection=True, skips the AI detection call entirely.
     """
+    if len(files) > 10:
+        raise HTTPException(status_code=400, detail="Maximum 10 files allowed.")
     context = load_context(context_id)
-    submission_text, file_type = await extract_text(file)
+    if len(files) == 1:
+        submission_text, file_type = await extract_text(files[0])
+    else:
+        submission_text, file_type = await extract_text_multi(files)
 
     spec = context["spec_text"]
     result = {
@@ -53,6 +56,10 @@ async def submit(
             f"STUDENT SUBMISSION:\n{submission_text}"
         )
         quiz = await call_llm_json(system, quiz_msg)
+        # Add formatted questions for readability
+        if "questions" in quiz:
+            for q in quiz["questions"]:
+                q["formatted"] = f"Q{q['question_number']}: {q['question']}"
         result["quiz"] = quiz
 
     # --- Summary (primary model) ---

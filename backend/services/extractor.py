@@ -39,6 +39,20 @@ async def extract_text(file: UploadFile) -> tuple[str, str]:
     return text, file_type
 
 
+async def extract_text_multi(files: list[UploadFile]) -> tuple[str, str]:
+    """Extract and concatenate text from multiple files (up to 10).
+    Returns (combined_text, file_types_summary)."""
+    all_texts = []
+    file_types = []
+    for f in files:
+        text, ftype = await extract_text(f)
+        all_texts.append(f"--- {f.filename} ---\n{text}")
+        file_types.append(ftype)
+    combined = "\n\n".join(all_texts)
+    types_summary = ", ".join(dict.fromkeys(file_types))  # unique types, preserve order
+    return combined, types_summary
+
+
 def _extract_pdf(content: bytes) -> str:
     text_parts = []
     with pdfplumber.open(io.BytesIO(content)) as pdf:

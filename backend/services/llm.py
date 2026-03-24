@@ -36,7 +36,7 @@ def _call_llm_sync(system_prompt: str, user_message: str, model: str) -> str:
                 {"role": "user", "content": user_message},
             ],
         )
-        return response.choices[0].message.content
+        return response.choices[0].message.content or ""
 
     elif provider == "anthropic":
         client = _get_anthropic_client()
@@ -70,9 +70,10 @@ async def call_llm(system_prompt: str, user_message: str, use_mini: bool = False
     """
     model = settings.llm_model_mini if use_mini else settings.llm_model
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(
+    result = await loop.run_in_executor(
         None, functools.partial(_call_llm_sync, system_prompt, user_message, model)
     )
+    return result or ""
 
 
 async def call_llm_json(system_prompt: str, user_message: str, use_mini: bool = False, retries: int = 1) -> dict:
