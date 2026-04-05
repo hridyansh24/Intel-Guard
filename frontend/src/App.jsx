@@ -37,8 +37,8 @@ function Nav() {
           fontSize: 12,
           fontWeight: 800,
           color: '#fff',
-        }}>IG</span>
-        Intel Guard
+        }}>AG</span>
+        AI Guard
       </Link>
       <div style={{ flex: 1 }} />
       {(isProfessor || isStudent) && (

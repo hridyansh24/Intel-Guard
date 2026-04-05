@@ -24,7 +24,7 @@ export default function Landing() {
           color: '#fff',
           margin: '0 auto 24px',
           boxShadow: '0 0 32px var(--accent-glow)',
-        }}>IG</div>
+        }}>AG</div>
         <h1 style={{
           fontSize: 36,
           fontWeight: 700,
@@ -32,7 +32,7 @@ export default function Landing() {
           marginBottom: 12,
           lineHeight: 1.2,
         }}>
-          Intel Guard
+          AI Guard
         </h1>
         <p style={{ color: 'var(--text-muted)', fontSize: 16, lineHeight: 1.6 }}>
           Don't block AI. Make cheating pointless.
