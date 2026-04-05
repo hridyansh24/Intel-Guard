@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.routers import context, analyze, quiz, summary, submit
 
 app = FastAPI(
-    title="Intel Guard",
+    title="AI Guard",
     description="Don't block AI. Make cheating pointless.",
     version="0.1.0",
 )
@@ -25,4 +25,4 @@ app.include_router(submit.router)
 
 @app.get("/")
 async def root():
-    return {"message": "Intel Guard API is running.", "docs": "/docs"}
+    return {"message": "AI Guard API is running.", "docs": "/docs"}

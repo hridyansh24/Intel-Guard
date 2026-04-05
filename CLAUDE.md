@@ -1,7 +1,7 @@
-# Intel Guard
+# AI Guard
 
 ## What this project is
-Academic integrity platform — detects AI-generated submissions and verifies student comprehension through quizzes and summaries. Local Python backend now, browser extension later.
+Academic integrity platform — detects AI-generated submissions and verifies student comprehension through quizzes and summaries. Local Python backend + React frontend now, browser extension later.
 
 ## Tech stack
 - **Backend:** Python, FastAPI, uvicorn
@@ -13,17 +13,17 @@ Academic integrity platform — detects AI-generated submissions and verifies st
 
 ## How to run
 ```bash
-# Backend
+# Quick setup (new machine)
+./setup.sh
+
+# Or manually:
 cp .env.example .env  # fill in API key
 pip install -r requirements.txt
-uvicorn backend.main:app --reload
-# Swagger docs at http://localhost:8000/docs
+cd frontend && npm install && cd ..
 
-# Frontend (separate terminal)
-cd frontend
-npm install
-npm run dev
-# Opens at http://localhost:5173
+# Run (two terminals)
+uvicorn backend.main:app --reload       # Backend → http://localhost:8000/docs
+cd frontend && npm run dev              # Frontend → http://localhost:5173
 ```
 
 ## Project structure
@@ -114,12 +114,26 @@ Assuming a `/submit/` call with detection + quiz (3 questions) + summary, ~2000 
 | POST | `/submit/` | Combined endpoint: 1-10 files, detect (optional) → quiz/summary in one call |
 
 ## Current status
-- Backend is functional and tested (2026-03-24) — analyze, submit, quiz generate all confirmed working
+- **Renamed from Intel Guard → AI Guard** (2026-04-05) — placeholder name, final name TBD
+- Backend is functional and tested — analyze, submit, quiz generate all confirmed working
 - Using OpenRouter with free models: `z-ai/glm-4.5-air:free` (primary) and `nvidia/nemotron-3-nano-30b-a3b:free` (mini)
 - Multi-file upload (up to 10 files) supported on context, analyze, and submit endpoints — form field is `files` (not `file`)
 - `call_llm()` handles None responses from free models (returns empty string instead of crashing)
-- **React frontend** at `frontend/` — two views: Professor (upload assignments, analyze submissions) and Student (submit work, interactive quiz with live evaluation, summary review). Proxied via Vite to backend at `localhost:8000`
+- **React frontend** (added 2026-04-05) at `frontend/` — dark theme, blue accent, minimalistic design:
+  - **Landing page** — role selection (Professor / Student)
+  - **Professor dashboard** — upload assignment specs, run AI detection analysis with probability score + signal cards + detailed assessment
+  - **Student portal** — multi-step flow: upload → AI detection results → interactive quiz (one question at a time, live evaluation with pass/fail feedback) → summary view → final score card
+  - Vite dev server proxies `/api/*` to `localhost:8000` — no CORS issues in dev
+  - CORS middleware added to backend as fallback
+- `setup.sh` script for one-command setup on new machines
 - No browser extension yet — end goal is Chrome/Firefox extension that intercepts paste/submit on LMS platforms (Canvas, Blackboard, Moodle)
+- **Planned behavioral heuristics** (not yet implemented):
+  - **Core philosophy:** AI Guard is not about punishing students — it's about ensuring they learn. Heuristics determine IF a student gets quizzed, not every student every time. Strong quiz performance actively reduces flag weight (e.g., 20% → 7%). No single report is a verdict — professors see trends over time and make their own decisions.
+  - **Confidence score system:** Each heuristic contributes a weighted score. Quiz only triggers when combined score crosses threshold. Professor dashboard shows patterns, not isolated incidents.
+  - **Time-based analysis:** Extension tracks assignment open → submit timestamps; professor sets estimated completion time; flags submissions significantly outside expected range
+  - **Writing style fingerprinting:** Build per-student writing profiles from historical submissions (prose tone, vocabulary habits, code naming conventions, formatting patterns); stored in cloud per-student; after 3–4 assignments, flag deviations from baseline
+  - **Quiz-time behavioral monitoring:** Tight time limit on quiz, paste detection on answer fields, tab-switch/focus-loss logging — all feed into confidence score rather than blocking
+  - Actively researching more heuristics
 - Two-person team, `dev` branch not yet created
 
 ## Design decisions
