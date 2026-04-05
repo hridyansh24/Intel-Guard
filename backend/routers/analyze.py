@@ -4,6 +4,7 @@ from fastapi.responses import JSONResponse
 from backend.services.extractor import extract_text, extract_text_multi
 from backend.services.context_store import load_context
 from backend.services.llm import call_llm_json
+from backend.services.result_cache import get_cached_result, save_result
 from backend.schemas import AnalyzeResponse
 from backend.prompts import AI_DETECTION_SYSTEM_PROMPT
 
@@ -25,12 +26,16 @@ async def analyze_submission(
         else:
             submission_text, file_type = await extract_text_multi(files)
 
-        user_message = (
-            f"ASSIGNMENT SPECIFICATION:\n{context['spec_text']}\n\n"
-            f"STUDENT SUBMISSION ({file_type}):\n{submission_text}"
-        )
-
-        result = await call_llm_json(AI_DETECTION_SYSTEM_PROMPT, user_message)
+        cached = get_cached_result(context_id, submission_text, "analyze")
+        if cached is not None:
+            result = cached
+        else:
+            user_message = (
+                f"ASSIGNMENT SPECIFICATION:\n{context['spec_text']}\n\n"
+                f"STUDENT SUBMISSION ({file_type}):\n{submission_text}"
+            )
+            result = await call_llm_json(AI_DETECTION_SYSTEM_PROMPT, user_message)
+            save_result(context_id, submission_text, "analyze", result)
 
         return AnalyzeResponse(
             context_id=context_id,

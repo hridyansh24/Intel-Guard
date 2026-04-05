@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 from backend.services.context_store import load_context
 from backend.services.llm import call_llm
+from backend.services.result_cache import get_cached_result, save_result
 from backend.schemas import SummaryResponse
 from backend.prompts import SUMMARY_PROMPT
 
@@ -15,11 +16,15 @@ async def summarize_submission(
     """Generate a comprehension-focused summary of the submission."""
     context = load_context(context_id)
 
-    user_message = (
-        f"ASSIGNMENT SPECIFICATION:\n{context['spec_text']}\n\n"
-        f"STUDENT SUBMISSION:\n{submission_text}"
-    )
-
-    summary = await call_llm(SUMMARY_PROMPT, user_message)
+    cached = get_cached_result(context_id, submission_text, "summary")
+    if cached is not None:
+        summary = cached
+    else:
+        user_message = (
+            f"ASSIGNMENT SPECIFICATION:\n{context['spec_text']}\n\n"
+            f"STUDENT SUBMISSION:\n{submission_text}"
+        )
+        summary = await call_llm(SUMMARY_PROMPT, user_message)
+        save_result(context_id, submission_text, "summary", summary)
 
     return SummaryResponse(context_id=context_id, summary=summary)

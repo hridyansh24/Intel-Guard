@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     llm_model_mini: str = "gpt-4o-mini"
     context_store_dir: str = "./context_store"
     submission_cache_dir: str = "./submission_cache"
+    result_cache_dir: str = "./result_cache"
 
     class Config:
         env_file = ".env"

@@ -3,6 +3,7 @@ from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from backend.services.extractor import extract_text, extract_text_multi
 from backend.services.context_store import load_context
 from backend.services.llm import call_llm, call_llm_json
+from backend.services.result_cache import get_cached_result, save_result, get_quiz_pool, save_quiz_pool, pick_from_pool
 from backend.prompts import AI_DETECTION_SYSTEM_PROMPT, QUIZ_GENERATION_PROMPT, SUMMARY_PROMPT
 from backend.schemas import SubmitResponse
 
@@ -41,34 +42,67 @@ async def submit(
 
     # --- AI Detection (skippable) ---
     if not skip_detection:
-        detect_msg = (
-            f"ASSIGNMENT SPECIFICATION:\n{spec}\n\n"
-            f"STUDENT SUBMISSION ({file_type}):\n{submission_text}"
-        )
-        detection = await call_llm_json(AI_DETECTION_SYSTEM_PROMPT, detect_msg)
+        cached_detect = get_cached_result(context_id, submission_text, "analyze")
+        if cached_detect is not None:
+            detection = cached_detect
+        else:
+            detect_msg = (
+                f"ASSIGNMENT SPECIFICATION:\n{spec}\n\n"
+                f"STUDENT SUBMISSION ({file_type}):\n{submission_text}"
+            )
+            detection = await call_llm_json(AI_DETECTION_SYSTEM_PROMPT, detect_msg)
+            save_result(context_id, submission_text, "analyze", detection)
         result["ai_detection"] = detection
 
-    # --- Quiz Generation (primary model) ---
+    # --- Quiz Generation (pool-based) ---
     if mode in ("quiz", "both"):
-        system = QUIZ_GENERATION_PROMPT.format(num_questions=num_questions)
-        quiz_msg = (
-            f"ASSIGNMENT SPECIFICATION:\n{spec}\n\n"
-            f"STUDENT SUBMISSION:\n{submission_text}"
-        )
-        quiz = await call_llm_json(system, quiz_msg)
-        # Add formatted questions for readability
-        if "questions" in quiz:
-            for q in quiz["questions"]:
-                q["formatted"] = f"Q{q['question_number']}: {q['question']}"
-        result["quiz"] = quiz
+        pool_size = num_questions * 4
+
+        async def _generate_quiz_pool():
+            system = QUIZ_GENERATION_PROMPT.format(num_questions=pool_size)
+            quiz_msg = (
+                f"ASSIGNMENT SPECIFICATION:\n{spec}\n\n"
+                f"STUDENT SUBMISSION:\n{submission_text}"
+            )
+            raw = await call_llm_json(system, quiz_msg)
+            if "_parse_failed" not in raw:
+                p = raw.get("questions", [])
+                save_quiz_pool(context_id, submission_text, p)
+                return p, None
+            return [], raw
+
+        pool = get_quiz_pool(context_id, submission_text)
+        if pool is None:
+            pool, quiz_err = await _generate_quiz_pool()
+
+        if pool:
+            questions = pick_from_pool(pool, num_questions, context_id, submission_text)
+            if questions is None:
+                # Pool exhausted — fresh batch
+                pool, quiz_err = await _generate_quiz_pool()
+                if pool:
+                    questions = pick_from_pool(pool, num_questions, context_id, submission_text)
+            if questions:
+                for q in questions:
+                    q["formatted"] = f"Q{q['question_number']}: {q['question']}"
+                result["quiz"] = {"questions": questions}
+            else:
+                result["quiz"] = quiz_err
+        else:
+            result["quiz"] = quiz_err
 
     # --- Summary (primary model) ---
     if mode in ("summary", "both"):
-        summary_msg = (
-            f"ASSIGNMENT SPECIFICATION:\n{spec}\n\n"
-            f"STUDENT SUBMISSION:\n{submission_text}"
-        )
-        summary = await call_llm(SUMMARY_PROMPT, summary_msg)
+        cached_summary = get_cached_result(context_id, submission_text, "summary")
+        if cached_summary is not None:
+            summary = cached_summary
+        else:
+            summary_msg = (
+                f"ASSIGNMENT SPECIFICATION:\n{spec}\n\n"
+                f"STUDENT SUBMISSION:\n{submission_text}"
+            )
+            summary = await call_llm(SUMMARY_PROMPT, summary_msg)
+            save_result(context_id, submission_text, "summary", summary)
         result["summary"] = summary
 
     return SubmitResponse(**result)

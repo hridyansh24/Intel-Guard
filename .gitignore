@@ -3,5 +3,5 @@ __pycache__/
 *.pyc
 context_store/
 submission_cache/
+result_cache/
 .DS_Store
-CLAUDE.md
