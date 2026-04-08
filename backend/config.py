@@ -6,11 +6,10 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://api.openai.com/v1"
     llm_model: str = "gpt-4o"
     llm_model_mini: str = "gpt-4o-mini"
-    context_store_dir: str = "./context_store"
-    submission_cache_dir: str = "./submission_cache"
-    result_cache_dir: str = "./result_cache"
+    database_url: str = "postgresql+asyncpg://localhost/ai_guard"
 
     class Config:
         env_file = ".env"
+        extra = "ignore"
 
 settings = Settings()

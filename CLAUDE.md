@@ -9,7 +9,7 @@ Academic integrity platform — detects AI-generated submissions and verifies st
 - **LLM:** Provider-agnostic (OpenAI/Anthropic/Gemini) — configured via `.env`
 - **PDF parsing:** pdfplumber
 - **Config:** pydantic-settings, python-dotenv
-- **Storage:** JSON files on disk (context_store/, submission_cache/, result_cache/)
+- **Database:** PostgreSQL (async via SQLAlchemy + asyncpg) — Supabase or Neon for deployment
 
 ## How to run
 ```bash
@@ -19,28 +19,39 @@ Academic integrity platform — detects AI-generated submissions and verifies st
 # Or manually:
 cp .env.example .env  # fill in API key
 pip install -r requirements.txt
-cd frontend && npm install && cd ..
+cd frontend-professor && npm install && cd ..
+cd frontend-student && npm install && cd ..
 
-# Run (two terminals)
-uvicorn backend.main:app --reload       # Backend → http://localhost:8000/docs
-cd frontend && npm run dev              # Frontend → http://localhost:5173
+# Run (three terminals)
+uvicorn backend.main:app --reload              # Backend → http://localhost:8000/docs
+cd frontend-professor && npm run dev           # Professor → http://localhost:5174
+cd frontend-student && npm run dev             # Student → http://localhost:5175
 ```
 
 ## Project structure
 ```
-frontend/                  # React SPA (Vite)
+frontend-professor/              # Professor React SPA (Vite, port 5174)
 ├── src/
-│   ├── main.jsx           # Entry point with BrowserRouter
-│   ├── App.jsx            # Nav + routes (/, /professor, /student)
-│   ├── api.js             # All API calls (proxied to localhost:8000)
-│   ├── index.css          # Global styles, dark theme, CSS variables
+│   ├── main.jsx                 # Entry point
+│   ├── App.jsx                  # Class list → class dashboard
+│   ├── api.js                   # All API calls (proxied to localhost:8000)
+│   ├── index.css                # Global styles, dark theme
 │   └── pages/
-│       ├── Landing.jsx    # Role selection (Professor / Student)
-│       ├── Professor.jsx  # Upload assignments, run AI detection analysis
-│       └── Student.jsx    # Submit work, interactive quiz, summary view
+│       └── ClassDashboard.jsx   # Tabs: assignments, students, submissions, analyze, style profiles
+frontend-student/                # Student React SPA (Vite, port 5175)
+├── src/
+│   ├── main.jsx                 # Entry point
+│   ├── App.jsx                  # Signup → dashboard (persisted in localStorage)
+│   ├── api.js                   # All API calls (proxied to localhost:8000)
+│   ├── index.css                # Global styles, dark theme
+│   └── pages/
+│       └── Dashboard.jsx        # Join class, submit work, quiz/summary, history
+frontend/                        # (Legacy) Original combined SPA — kept for reference
 backend/
-├── main.py              # FastAPI app entrypoint
-├── config.py            # Settings from .env
+├── main.py              # FastAPI app entrypoint (lifespan handler creates tables on startup)
+├── config.py            # Settings from .env (DATABASE_URL for PostgreSQL)
+├── database.py          # Async SQLAlchemy engine, session factory, Base, get_db dependency
+├── models.py            # All SQLAlchemy ORM models (Student, Class, Context, Submission, StyleProfile, caches)
 ├── schemas.py           # All Pydantic request/response models
 ├── prompts.py           # All LLM system prompts (shared across routers)
 ├── routers/
@@ -48,26 +59,40 @@ backend/
 │   ├── analyze.py       # AI detection with 7-layer heuristic prompt
 │   ├── quiz.py          # Generate + evaluate comprehension questions (evaluate uses mini model)
 │   ├── summary.py       # Comprehension-focused submission walkthrough
-│   └── submit.py        # Combined endpoint — orchestrates detect → quiz/summary in one call
+│   ├── submit.py        # Combined endpoint — orchestrates detect → style → quiz/summary + saves submission record
+│   ├── style.py         # Writing style fingerprinting — update profiles, compare, get profiles
+│   ├── students.py      # Student registration (name → unique ID)
+│   ├── classes.py       # Class CRUD, join, link assignments, view roster/submissions
+│   └── submissions.py   # Submission history — list, get, update quiz results
 └── services/
     ├── llm.py           # LLM abstraction — async, dual models, JSON retry, client caching
-    ├── extractor.py     # PDF, code, and text file extraction (with caching)
-    ├── context_store.py # JSON file storage for assignment specs (with ID validation)
-    ├── submission_cache.py # Caches extracted text by content hash
-    └── result_cache.py    # Caches LLM responses (analyze, quiz pool, summary) by context+submission hash
+    ├── extractor.py     # PDF, code, and text file extraction (with DB-backed caching)
+    ├── context_store.py # Context CRUD via PostgreSQL
+    ├── student_store.py   # Student registration via PostgreSQL
+    ├── class_store.py     # Class management via PostgreSQL (with selectinload for relationships)
+    ├── submission_store.py # Submission records via PostgreSQL (JSONB for results)
+    ├── submission_cache.py # Caches extracted text by content hash (PostgreSQL)
+    ├── result_cache.py    # Caches LLM responses + quiz pools (PostgreSQL, JSONB)
+    ├── style_analyzer.py  # Quantitative style metrics (~80 features) for prose + code
+    └── style_store.py     # Per-student profile storage, Welford's algorithm, deviation scoring (PostgreSQL, JSONB)
 ```
 
 ## Key concepts
 - **Context** = assignment specification. Uploaded first, referenced by `context_id` in all subsequent calls. Every LLM call gets the assignment spec injected into the system prompt so questions/analysis are grounded in what was actually assigned.
-- **Analyze** = AI detection. Uses a 7-layer prompt checking content-level, word-level, grammar, formatting, communication artifacts, "soulless but clean" test, and code-specific signals.
+- **Analyze** = AI detection. Uses an 8-layer prompt: content-level, word-level, grammar, formatting, communication artifacts, "soulless but clean" test, code-specific signals, and **Layer 8: writing style comparison** (when student profile is available, the LLM compares submission against the student's known writing patterns).
 - **Quiz** = comprehension verification. Two-step: generate questions, then evaluate student answers.
 - **Summary** = comprehension walkthrough. Student-friendly, structured so they can't just scroll past.
+- **Style** = writing style fingerprinting. Hybrid quantitative (~80 metrics) + qualitative (LLM-rated) analysis. Per-student profiles updated incrementally via Welford's online algorithm. Computes deviation score on new submissions. Generates a `style_summary` (natural language description) stored in DB and injected into AI detection prompts for personalized analysis.
+- **Confidence Score** = combined heuristic score. Formula: `raw = W_AI(0.50) × ai_prob + W_STYLE(0.35) × style_dev + W_TIME(0.15) × time_anomaly`, then `confidence = raw × (1 - quiz_score × 0.65)`. Thresholds: <0.25 low, 0.25-0.45 moderate, 0.45-0.65 elevated (quiz), 0.65+ high (quiz + flag).
+- **Student** = registered user with a unique ID (UUID-8). Signs up with just a name (testing mode). Stored in `students` table.
+- **Class** = a group of students linked to assignments. Professor creates classes, students join. Stored in `classes` table with `class_students` association table and `class_contexts` table (includes per-assignment `skip_detection` flag).
+- **Submission Record** = persisted record of a student's submission with AI detection, style analysis, confidence score, and quiz results. Stored in `submissions` table (JSONB columns for complex results). Created automatically when student submits via `/submit/` with both `student_id` and `class_id`.
 
 ## Cost optimizations
 - **Dual-model routing:** Primary model for detection, quiz generation, summary. Mini model for evaluating quiz answers — the most frequent call (~3× per submission). Currently using free OpenRouter models (see `.env`).
 - **Submission caching:** Extracted text is cached by SHA-256 hash. Re-uploading the same file (retries) skips extraction entirely.
 - **Optional AI detection:** `POST /submit/` accepts `skip_detection=True` for quiz-everyone mode. Saves one full primary-model call per submission (~20% cost reduction).
-- **LLM result caching (`result_cache.py`):** Caches LLM responses on disk keyed by `hash(context_id + submission_text + operation)`. Analyze, quiz, and summary results are all cached — same submission against the same assignment never triggers a repeat LLM call. Cache is shared across endpoints (e.g., `/analyze/` and `/submit/` hit the same cache key for detection).
+- **LLM result caching (`result_cache.py`):** Caches LLM responses in PostgreSQL keyed by `hash(context_id + submission_text + operation)`. Analyze, quiz, and summary results are all cached — same submission against the same assignment never triggers a repeat LLM call. Cache is shared across endpoints (e.g., `/analyze/` and `/submit/` hit the same cache key for detection).
 - **Quiz question pool with exhaustion refresh:** Instead of generating `num_questions` per attempt, the first call generates `num_questions * 4` (e.g., 12 for a 3-question quiz) and caches the pool. Each retry serves unseen questions only — tracked via `served_indices` in the cache file. When all questions have been served (e.g., after 4 attempts of 3 questions from a pool of 12), the pool is automatically deleted and a fresh batch of 12 is generated from the LLM. Cost overhead is ~10-15% extra output tokens per pool generation; all attempts within a pool are free.
 
 ### Cost metrics summary
@@ -99,7 +124,10 @@ Assuming a `/submit/` call with detection + quiz (3 questions) + summary, ~2000 
 - All LLM system prompts live in `prompts.py` — routers import from there, never define prompts inline
 - File extraction always goes through `services/extractor.py`
 - Accepts any file type: PDF, code files (.py, .js, .java, .cpp, etc.), plain text
-- `context_id` and cache keys are validated with a regex allowlist (hex + hyphens only) to prevent path traversal
+- All data stored in PostgreSQL — no JSON files on disk (migrated 2026-04-08)
+- All service functions are async and accept `db: AsyncSession` as first parameter
+- All routers inject `db: AsyncSession = Depends(get_db)` and pass it to service calls
+- JSONB columns used for complex nested data (style profiles, cache results, submission details)
 
 ## API endpoints
 | Method | Path | Purpose |
@@ -111,7 +139,25 @@ Assuming a `/submit/` call with detection + quiz (3 questions) + summary, ~2000 
 | POST | `/quiz/generate` | Submission text + `context_id` → comprehension questions |
 | POST | `/quiz/evaluate` | Student answer + question + context → pass/fail (uses mini model) |
 | POST | `/summary/` | Submission text + `context_id` → comprehension walkthrough |
-| POST | `/submit/` | Combined endpoint: 1-10 files, detect (optional) → quiz/summary in one call |
+| POST | `/submit/` | Combined endpoint: 1-10 files, detect → style → quiz/summary. Optional `student_id` + `class_id` for tracking. |
+| POST | `/style/update` | Upload submission files + `student_id` + `context_id` → update student's style profile |
+| GET | `/style/profiles` | List all student style profiles |
+| GET | `/style/{student_id}` | Get a student's full style profile |
+| POST | `/style/compare` | Upload files + `student_id` + `context_id` → compare against historical profile, return deviation score |
+| POST | `/students/register` | Register student (name) → returns `student_id` |
+| GET | `/students/` | List all students |
+| GET | `/students/{id}` | Get a student |
+| POST | `/classes/` | Create a class (name) → returns `class_id` |
+| GET | `/classes/` | List all classes |
+| GET | `/classes/{id}` | Get a class (with students[] and contexts[]) |
+| POST | `/classes/{id}/join` | Student joins a class |
+| POST | `/classes/{id}/context` | Link an assignment to a class |
+| GET | `/classes/{id}/students` | Get students in a class |
+| GET | `/classes/{id}/submissions` | Get submissions for a class (optional `?context_id=` filter) |
+| GET | `/classes/student/{id}` | Get classes a student belongs to |
+| GET | `/submissions/` | List submissions (filterable by `class_id`, `student_id`, `context_id`) |
+| GET | `/submissions/{id}` | Get a specific submission record |
+| PATCH | `/submissions/{id}/quiz` | Update quiz results on a submission |
 
 ## Current status
 - **Renamed from Intel Guard → AI Guard** (2026-04-05) — placeholder name, final name TBD
@@ -119,21 +165,43 @@ Assuming a `/submit/` call with detection + quiz (3 questions) + summary, ~2000 
 - Using OpenRouter with free models: `z-ai/glm-4.5-air:free` (primary) and `nvidia/nemotron-3-nano-30b-a3b:free` (mini)
 - Multi-file upload (up to 10 files) supported on context, analyze, and submit endpoints — form field is `files` (not `file`)
 - `call_llm()` handles None responses from free models (returns empty string instead of crashing)
-- **React frontend** (added 2026-04-05) at `frontend/` — dark theme, blue accent, minimalistic design:
-  - **Landing page** — role selection (Professor / Student)
-  - **Professor dashboard** — upload assignment specs, run AI detection analysis with probability score + signal cards + detailed assessment
-  - **Student portal** — multi-step flow: upload → AI detection results → interactive quiz (one question at a time, live evaluation with pass/fail feedback) → summary view → final score card
-  - Vite dev server proxies `/api/*` to `localhost:8000` — no CORS issues in dev
-  - CORS middleware added to backend as fallback
+- **Split frontend architecture** (refactored 2026-04-08) — two separate Vite React apps sharing the same design system:
+  - **Professor app** (`frontend-professor/`, port 5174): create classes → create assignments → link to class → view roster → upload student previous work for style profiling → compare new submissions → view all submissions with AI/style/confidence badges → run standalone AI detection analysis
+  - **Student app** (`frontend-student/`, port 5175): simple name signup (→ unique ID, persisted in localStorage) → join class → select class + assignment → submit files → AI detection results + confidence score → interactive quiz → summary → submission history
+  - Original `frontend/` kept for reference but no longer primary
+  - Both Vite dev servers proxy `/api/*` to `localhost:8000` — no CORS issues in dev
+  - CORS middleware covers ports 5173, 5174, 5175
+- **Class & student management** (added 2026-04-08):
+  - Students register with just a name (for testing) → get UUID-8 student_id
+  - Professor creates classes, students join them
+  - Assignments (contexts) are linked to classes
+  - Submissions are tracked per-student per-class with full results (AI detection, style analysis, confidence, quiz)
+  - All stored in PostgreSQL
 - `setup.sh` script for one-command setup on new machines
 - No browser extension yet — end goal is Chrome/Firefox extension that intercepts paste/submit on LMS platforms (Canvas, Blackboard, Moodle)
+- **Writing style fingerprinting** (implemented 2026-04-06):
+  - Hybrid quantitative (~80 metrics) + qualitative (LLM-rated, mini model) style analysis
+  - Works for both **prose** (lexical richness, sentence structure, punctuation fingerprint, function word frequencies, readability) and **code** (comment density, naming conventions, line metrics, function decomposition, indent style)
+  - Per-student profiles in `style_profiles` table (JSONB) with Welford's online algorithm (incremental O(1) updates)
+  - Deviation scoring: z-scores on scalars, cosine distance on vectors, weighted by discriminating power
+  - Needs 3+ submissions per student before comparisons are meaningful; minimum 300 words per submission
+- **Confidence score formula** (implemented 2026-04-06):
+  - `raw = W_AI(0.50) × ai_prob + W_STYLE(0.35) × style_dev + W_TIME(0.15) × time_anomaly`
+  - `confidence = raw × (1 - quiz_score × 0.65)` — acing quiz reduces score by up to 65%
+  - Thresholds: <0.25 low, 0.25-0.45 moderate, 0.45-0.65 elevated (quiz), 0.65+ high (quiz + flag)
+  - `/submit/` now accepts optional `student_id` — auto-runs style analysis and returns confidence score
 - **Planned behavioral heuristics** (not yet implemented):
-  - **Core philosophy:** AI Guard is not about punishing students — it's about ensuring they learn. Heuristics determine IF a student gets quizzed, not every student every time. Strong quiz performance actively reduces flag weight (e.g., 20% → 7%). No single report is a verdict — professors see trends over time and make their own decisions.
-  - **Confidence score system:** Each heuristic contributes a weighted score. Quiz only triggers when combined score crosses threshold. Professor dashboard shows patterns, not isolated incidents.
   - **Time-based analysis:** Extension tracks assignment open → submit timestamps; professor sets estimated completion time; flags submissions significantly outside expected range
-  - **Writing style fingerprinting:** Build per-student writing profiles from historical submissions (prose tone, vocabulary habits, code naming conventions, formatting patterns); stored in cloud per-student; after 3–4 assignments, flag deviations from baseline
   - **Quiz-time behavioral monitoring:** Tight time limit on quiz, paste detection on answer fields, tab-switch/focus-loss logging — all feed into confidence score rather than blocking
   - Actively researching more heuristics
+- **PostgreSQL migration** (completed 2026-04-08):
+  - Migrated all storage from JSON files on disk to PostgreSQL via async SQLAlchemy + asyncpg
+  - Tables: students, classes, class_students, class_contexts, contexts, submissions, style_profiles, submission_caches, result_caches, quiz_pools
+  - JSONB columns for complex nested data (Welford stats, LLM results, quiz pools)
+  - `database.py` — engine, session factory, `get_db()` dependency, `init_db()` lifespan handler
+  - `models.py` — all SQLAlchemy ORM models
+  - Requires `DATABASE_URL` in `.env` (Supabase or Neon recommended for deployment)
+  - Tables auto-created on startup via `create_all`
 - Two-person team, `dev` branch not yet created
 
 ## Design decisions
@@ -142,6 +210,7 @@ Assuming a `/submit/` call with detection + quiz (3 questions) + summary, ~2000 
 - The 7-layer detection prompt checks: content inflation, AI vocabulary, grammar tells, formatting tells, chatbot artifacts, "soulless but clean" test, code-specific signals
 - Quiz questions are grounded in the assignment spec so they test real understanding, not trivia
 - Summary mode is an alternative to quiz — instructor chooses which mode to use
+- Style-aware AI detection: when a student has a style profile, their `style_summary` is injected into the AI detection prompt so the LLM can compare the submission against the student's known writing patterns. The summary is auto-generated from accumulated qualitative data (no extra LLM call).
 
 ## Git workflow
 - `main` — stable, deployable

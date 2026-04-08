@@ -1,39 +1,29 @@
 import hashlib
-import json
-import os
-import re
-from backend.config import settings
-
-_SAFE_HASH = re.compile(r"^[a-f0-9]+$")
-
-
-def _cache_dir() -> str:
-    os.makedirs(settings.submission_cache_dir, exist_ok=True)
-    return settings.submission_cache_dir
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from backend.models import SubmissionCache
 
 
 def _hash_content(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()[:16]
 
 
-def get_cached(content: bytes) -> dict | None:
-    """Check if we already extracted text from this exact file."""
+async def get_cached(db: AsyncSession, content: bytes) -> dict | None:
     cache_id = _hash_content(content)
-    path = os.path.join(_cache_dir(), f"{cache_id}.json")
-    if os.path.exists(path):
-        with open(path) as f:
-            return json.load(f)
+    result = await db.get(SubmissionCache, cache_id)
+    if result:
+        return {
+            "cache_id": result.content_hash,
+            "extracted_text": result.extracted_text,
+            "file_type": result.file_type,
+        }
     return None
 
 
-def save_to_cache(content: bytes, extracted_text: str, file_type: str) -> str:
-    """Cache extracted text. Returns the cache_id."""
+async def save_to_cache(db: AsyncSession, content: bytes, extracted_text: str, file_type: str) -> str:
     cache_id = _hash_content(content)
-    path = os.path.join(_cache_dir(), f"{cache_id}.json")
-    with open(path, "w") as f:
-        json.dump({
-            "cache_id": cache_id,
-            "extracted_text": extracted_text,
-            "file_type": file_type,
-        }, f)
+    existing = await db.get(SubmissionCache, cache_id)
+    if not existing:
+        db.add(SubmissionCache(content_hash=cache_id, extracted_text=extracted_text, file_type=file_type))
+        await db.commit()
     return cache_id

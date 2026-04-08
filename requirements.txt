@@ -7,3 +7,5 @@ openai
 anthropic
 google-generativeai
 python-dotenv
+sqlalchemy[asyncio]
+asyncpg

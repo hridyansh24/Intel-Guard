@@ -1,4 +1,6 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+from backend.database import get_db
 from backend.services.context_store import load_context
 from backend.services.llm import call_llm_json
 from backend.services.result_cache import get_quiz_pool, save_quiz_pool, pick_from_pool
@@ -13,14 +15,9 @@ async def generate_quiz(
     context_id: str,
     submission_text: str,
     num_questions: int = 3,
+    db: AsyncSession = Depends(get_db),
 ):
-    """Generate comprehension check questions based on submission + assignment context.
-
-    Generates a pool of num_questions * 4 on first call, caches it,
-    then serves random unseen subsets on each request. When the pool
-    is exhausted, generates a fresh batch automatically.
-    """
-    context = load_context(context_id)
+    context = await load_context(db, context_id)
     pool_size = num_questions * 4
 
     async def _generate_pool():
@@ -33,10 +30,10 @@ async def generate_quiz(
         if "_parse_failed" in result:
             return None, result
         pool = result.get("questions", [])
-        save_quiz_pool(context_id, submission_text, pool)
+        await save_quiz_pool(db, context_id, submission_text, pool)
         return pool, None
 
-    pool = get_quiz_pool(context_id, submission_text)
+    pool = await get_quiz_pool(db, context_id, submission_text)
     if pool is None:
         pool, err = await _generate_pool()
         if err:
@@ -45,16 +42,15 @@ async def generate_quiz(
                 questions=[QuizQuestion(question=err["_raw"], question_number=1)],
             )
 
-    questions = pick_from_pool(pool, num_questions, context_id, submission_text)
+    questions = await pick_from_pool(db, pool, num_questions, context_id, submission_text)
     if questions is None:
-        # Pool exhausted — generate fresh batch
         pool, err = await _generate_pool()
         if err:
             return QuizResponse(
                 context_id=context_id,
                 questions=[QuizQuestion(question=err["_raw"], question_number=1)],
             )
-        questions = pick_from_pool(pool, num_questions, context_id, submission_text)
+        questions = await pick_from_pool(db, pool, num_questions, context_id, submission_text)
 
     return QuizResponse(
         context_id=context_id,
@@ -63,9 +59,8 @@ async def generate_quiz(
 
 
 @router.post("/evaluate", response_model=EvaluateResponse)
-async def evaluate_answer(req: EvaluateRequest):
-    """Evaluate a student's answer to a comprehension check question."""
-    context = load_context(req.context_id)
+async def evaluate_answer(req: EvaluateRequest, db: AsyncSession = Depends(get_db)):
+    context = await load_context(db, req.context_id)
 
     user_message = (
         f"ASSIGNMENT SPECIFICATION:\n{context['spec_text']}\n\n"

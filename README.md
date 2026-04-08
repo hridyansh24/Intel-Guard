@@ -60,14 +60,22 @@ AI Guard does not ban AI. It does not accuse students of cheating. It exists bec
 
 ### What's Built Now
 
-- **Python FastAPI backend** running locally with the following endpoints:
+- **Python FastAPI backend** with async SQLAlchemy + PostgreSQL (Neon):
   - Upload assignment specs (the "context" that grounds all AI calls)
-  - AI detection using a 7-layer heuristic prompt (content, vocabulary, grammar, formatting, chatbot artifacts, "soulless but clean" test, code-specific signals)
+  - AI detection using a 7-layer heuristic prompt + **Layer 8: writing style comparison** (when student profile exists, the LLM compares the submission against the student's known writing patterns)
   - Comprehension quiz generation + answer evaluation
   - Submission summarization as an alternative to quizzing
   - Combined `/submit` endpoint that orchestrates the full flow in one call
+  - Writing style fingerprinting with per-student profiles (~80 quantitative metrics + LLM qualitative analysis)
+  - Class & student management — professors create classes, students join, assignments are linked per-class
+  - Per-assignment `skip_detection` toggle controlled by professors
+  - Full submission history with AI detection, style analysis, confidence scores, and quiz results
+- **Split frontend** — two separate React (Vite) apps:
+  - **Professor app** (port 5174) — class management, assignment creation, student roster, style profiling, submission review with badges, standalone AI analysis with optional student selection for style-aware detection
+  - **Student app** (port 5175) — signup, join classes, submit work, quiz/summary, submission history
 - **LLM-agnostic** — swap between OpenAI, Anthropic, or Gemini by changing one `.env` variable
-- **Cost-optimized** — dual-model routing (primary model for detection/generation, mini model for evaluation), submission caching, optional AI detection skip
+- **Cost-optimized** — dual-model routing (primary model for detection/generation, mini model for evaluation), submission caching, result caching, quiz pool reuse, optional AI detection skip
+- **PostgreSQL storage** — all data in Neon Postgres (10 tables), JSONB for complex nested data (style profiles, LLM results)
 
 ### Planned (Extension + Cloud)
 
@@ -79,13 +87,19 @@ AI Guard does not ban AI. It does not accuse students of cheating. It exists bec
 - **Analytics Pipeline** — aggregates anonymized comprehension data for instructor and admin dashboards.
 - **Auth Service** — university SSO integration (SAML 2.0, OAuth 2.0) so students log in with existing campus credentials.
 
-### Behavioral Heuristics (Planned)
+### Behavioral Heuristics
 
 AI Guard doesn't quiz every student on every submission — that would be exhausting and counterproductive. Instead, the system runs behavioral heuristics in the background and only triggers a comprehension check when the combination of signals suggests it would be valuable. Think of it as a smart filter: most submissions pass through without interruption, and the ones that get flagged receive a learning opportunity, not an accusation.
 
 Each heuristic contributes a weighted confidence score. No single heuristic can trigger a quiz on its own. And if a student is flagged but demonstrates strong comprehension on the quiz, the flag weight is actively reduced — the system learns that this student understands their work, and adjusts accordingly.
 
-#### 1. Time-Based Analysis
+#### 1. AI Detection (7-Layer Prompt Analysis)
+
+The first signal. A purpose-built prompt runs the submission through seven detection layers: content-level red flags, AI-signature vocabulary, grammar/structure tells, formatting tells, chatbot communication artifacts, the "soulless but clean" test, and code-specific signals. Returns an `ai_probability` (0.0–1.0).
+
+This is the existing `/analyze/` endpoint. It contributes the largest weight (50%) to the confidence score but is never a verdict on its own.
+
+#### 2. Time-Based Analysis (Planned — Extension Required)
 
 For an assignment that should take two weeks, submitting a polished solution minutes after opening it is worth a second look. AI Guard tracks the time between when a student first accesses an assignment and when they submit it.
 
@@ -95,25 +109,109 @@ For an assignment that should take two weeks, submitting a polished solution min
 
 This doesn't prove anything on its own — a fast student might genuinely be that fast. It's one data point among many.
 
-#### 2. Writing Style Fingerprinting
+#### 3. Writing Style Fingerprinting (Implemented)
 
-Every student writes differently. Over time, AI Guard builds a per-student writing profile — a fingerprint of their natural style — and notices when a submission deviates significantly from it.
+Every student writes differently — both in prose and in code. Over time, AI Guard builds a per-student writing profile — a fingerprint of their natural style — and notices when a submission deviates significantly from it.
 
 **How it works:**
 
-- **Professor uploads previous assignments** — for each student, earlier submissions (essays, code, lab reports) are fed into the system to establish a baseline.
-- **AI analyzes and stores the student's writing style** — the system identifies patterns like:
-  - **Prose:** Tone (casual vs. formal), vocabulary preferences, use of emphasis words (e.g., a student who frequently writes "ridiculously large" or "insanely complex"), reliance on examples, sentence structure habits, paragraph length tendencies.
-  - **Code:** Variable naming conventions (e.g., `index` vs. `idx` vs. `i`), preference for multi-line vs. single-line expressions, comment style, indentation habits, control flow patterns, function decomposition style.
-- **Style profile is stored per student** — each student's fingerprint lives in a cloud-based profile, linked to their identity across courses and semesters.
-- **Future submissions are compared against the baseline** — after 3–4 assignments, the system has enough data to detect meaningful deviations. For example:
-  - A student who always writes casually suddenly submits a formal, polished essay with no contractions.
-  - A student who consistently names loop variables `index` suddenly uses `idx` and `i` throughout.
-  - A student who writes verbose, multi-line code suddenly submits a compact, one-liner-heavy solution.
+The system uses a **hybrid approach** combining ~80 quantitative metrics computed directly in Python (zero LLM cost) with qualitative LLM analysis (mini model, cheap).
 
-Students naturally grow and evolve — that's the whole point of education. The system accounts for gradual shifts. What it looks for is sudden, dramatic changes across multiple style dimensions on a single assignment, which might indicate the student could benefit from a comprehension check.
+**Quantitative metrics (computed instantly, no LLM):**
 
-#### The Confidence Score System
+For **prose** submissions:
+- **Lexical richness** — Type-token ratio (vocabulary diversity), hapax legomena ratio (words used only once), Yule's K (length-independent richness), average word length, word length distribution, advanced vocabulary ratio
+- **Sentence structure** — Mean sentence length, sentence length standard deviation (AI text has notably LOW variance — one of the strongest signals), sentence length distribution, question/exclamation ratios
+- **Punctuation fingerprint** — Frequency per 1000 words of: commas, semicolons, colons, em-dashes, parentheses, quotation marks, ellipses. Every person has a distinctive punctuation fingerprint — this is one of the strongest stylometric signals in the literature.
+- **Function word frequencies** — The top 50 English function words (the, of, and, a, to, in...) measured per 1000 words. This is the backbone of Burrows' Delta, the gold standard in computational stylometry since 2002. Consistently the single most powerful feature family for authorship attribution.
+- **Readability** — Flesch-Kincaid Grade Level, Automated Readability Index
+- **Paragraph structure** — Paragraph count, mean paragraph length, bullet/heading usage
+
+For **code** submissions:
+- **Comment density** — Comment lines / total lines
+- **Line metrics** — Average line length, line length standard deviation, blank line ratio
+- **Naming conventions** — snake_case vs camelCase vs PascalCase ratios, average identifier length. A student who always writes `index` suddenly using `idx` is a signal.
+- **Function decomposition** — Average function length, function count
+- **Indentation style** — Tabs vs spaces, indent width
+
+**Qualitative analysis (LLM-based, uses mini model):**
+
+A structured "Linguistically Informed Prompt" rates 10 dimensions on a 1-5 scale:
+
+For prose: formality, confidence, complexity, conciseness, voice, perspective, argument style, explanation pattern, transition style, quirks — plus top 5 characteristic phrases and an overall impression.
+
+For code: formality (hacky → production-grade), confidence (defensive → assertive), complexity (linear → abstracted), conciseness (verbose → terse), voice (textbook → personal), decomposition style, naming style, comment style, error handling, quirks — plus top 5 code patterns.
+
+**Profile storage:**
+
+Each student gets a profile in the `style_profiles` PostgreSQL table (JSONB columns). Metrics are updated incrementally using **Welford's online algorithm** — a mathematically exact method for computing running mean and variance in O(1) per update. No old submissions are ever reprocessed. The profile just gets more accurate with each new submission.
+
+After **3 submissions**, the system has enough data to start comparing. The more submissions, the tighter the baseline becomes.
+
+**Deviation scoring:**
+
+When a new submission comes in, each metric is compared against the student's historical profile:
+
+- **Scalar metrics** — z-score against the running mean/variance, weighted by discriminating power (function word frequencies weighted 3x, sentence length variance weighted 2.5x, punctuation weighted 2x, etc.)
+- **Vector metrics** — Cosine distance between the new submission's function word vector and the profile's mean vector
+- **Qualitative dimensions** — Score delta against historical mean on each 1-5 dimension
+
+The result is a **style deviation score** from 0.0 (matches profile perfectly) to 1.0 (completely different writer). The system also reports the top 5 most deviant metrics so professors can see exactly what changed.
+
+#### The Confidence Score Formula
+
+Here's how all the signals combine into a single number.
+
+**Formula:**
+
+```
+raw_score = (W_AI × ai_probability) + (W_STYLE × style_deviation) + (W_TIME × time_anomaly)
+                    ↓                          ↓                           ↓
+                normalized by              normalized by               normalized by
+              active weights             active weights             active weights
+
+confidence_score = raw_score × (1 - quiz_reduction)
+```
+
+**Where:**
+- `ai_probability` = AI detection score from the 7-layer analysis (0.0–1.0)
+- `style_deviation` = Writing style deviation from the student's historical profile (0.0–1.0)
+- `time_anomaly` = How far outside the expected completion time (0.0–1.0) [planned — extension required]
+- `quiz_reduction` = `quiz_score × 0.65` — acing the quiz reduces the score by up to 65%
+
+**Default weights:**
+
+| Signal | Weight | Status |
+|--------|--------|--------|
+| AI Detection (`W_AI`) | 0.50 | Implemented |
+| Writing Style (`W_STYLE`) | 0.35 | Implemented |
+| Time Analysis (`W_TIME`) | 0.15 | Planned |
+| Quiz Reduction | up to -65% | Implemented |
+
+Weights are normalized by active signals — if time analysis isn't available yet, AI detection and style deviation are renormalized to fill the full weight.
+
+**Threshold classification:**
+
+| Confidence Score | Level | Action |
+|-----------------|-------|--------|
+| 0.00 – 0.25 | Low | No flag, no quiz |
+| 0.25 – 0.45 | Moderate | Logged for trend tracking, no quiz |
+| 0.45 – 0.65 | Elevated | Quiz triggered |
+| 0.65 – 1.00 | High | Quiz triggered, flagged for review |
+
+**Example scenarios:**
+
+| Scenario | AI Prob | Style Dev | Quiz Score | Final Score | Result |
+|----------|---------|-----------|------------|-------------|--------|
+| Original work, consistent style | 0.15 | 0.10 | — | 0.13 | Low — no flag |
+| AI-detected but student style matches | 0.70 | 0.10 | — | 0.45 | Elevated — quiz triggered |
+| Same student aces the quiz | 0.70 | 0.10 | 0.90 | 0.16 | Low — flag cleared |
+| AI-detected AND style shifted | 0.75 | 0.70 | — | 0.73 | High — flagged for review |
+| Style shifted, aces quiz anyway | 0.75 | 0.70 | 1.00 | 0.25 | Low — comprehension proven |
+| No AI flags, sudden style change | 0.10 | 0.80 | — | 0.39 | Moderate — logged, no quiz |
+| New student (< 3 submissions) | 0.60 | N/A | — | 0.60 | Elevated — quiz (AI-only score) |
+
+**The key insight:** Strong quiz performance is the fastest way to clear any flag. A student who understands their work — regardless of whether they used AI to help write it — should be able to demonstrate that understanding. The system rewards comprehension, not punishment.
 
 Here's how the pieces fit together:
 
@@ -147,7 +245,7 @@ The result: students who actually understand their work breeze through the quiz 
 
 #### More Heuristics to Come
 
-Time analysis, writing style fingerprinting, and quiz-time behavioral monitoring are just the beginning. We are actively researching additional behavioral patterns and signals to build a robust, multi-signal detection system where no single heuristic is a verdict, but the combination provides professors with the context they need to support their students.
+Time analysis and quiz-time behavioral monitoring are next. We are actively researching additional behavioral patterns and signals to build a robust, multi-signal detection system where no single heuristic is a verdict, but the combination provides professors with the context they need to support their students.
 
 ---
 
@@ -157,10 +255,16 @@ AI Guard follows the standard B2B SaaS model used across education technologies 
 
 ## Roadmap
 
-### Phase 1 — Local Backend (current)
-- Python FastAPI backend with AI detection, quiz, and summary endpoints
-- LLM-agnostic architecture (OpenAI / Anthropic / Gemini)
-- Cost optimizations: dual-model routing, submission caching, optional detection skip
+### Phase 1 — Backend + Frontend + Style Fingerprinting (current)
+- Python FastAPI backend with PostgreSQL (Neon) — AI detection, quiz, summary, style fingerprinting, class/student management
+- Split React frontends — professor app (class management, analysis, style profiles) + student app (submit, quiz, history)
+- LLM-agnostic architecture (OpenAI / Anthropic / Gemini via OpenRouter)
+- Cost optimizations: dual-model routing, submission caching, result caching, quiz pool reuse, optional detection skip
+- Writing style fingerprinting: ~80 quantitative metrics (prose + code) + LLM qualitative analysis
+- Style-aware AI detection: student's writing profile injected into the detection prompt for personalized analysis
+- Per-student profiles with Welford's online algorithm (incremental, O(1) updates)
+- Confidence score formula combining AI detection + style deviation + quiz adjustment
+- Canvas LMS API integration ready (professor token access to submissions + assignment specs)
 
 ### Phase 2 — Browser Extension
 - Chrome extension with paste detection on Canvas
@@ -168,11 +272,10 @@ AI Guard follows the standard B2B SaaS model used across education technologies 
 - Communication with backend API
 - Time-based analysis: track assignment open → submit timestamps
 
-### Phase 3 — Behavioral Heuristics
-- Writing style fingerprinting: build per-student style profiles from historical submissions
-- Code style analysis: variable naming, formatting habits, decomposition patterns
-- Cross-assignment deviation detection (requires 3–4 submissions per student)
-- Cloud-based student profile storage
+### Phase 3 — Canvas Integration + Cloud
+- Auto-pull assignments and submissions via Canvas REST API
+- Bulk historical submission import for building student profiles
+- Post AI Guard results back to Canvas as grade comments
 
 ### Phase 4 — Cloud + LMS Integration
 - Deploy backend to cloud (AWS / GCP)
@@ -184,12 +287,11 @@ AI Guard follows the standard B2B SaaS model used across education technologies 
 
 | Layer | Technology |
 |-------|-----------|
-| Backend API | Python, FastAPI |
-| AI / Comprehension Engine | OpenAI / Anthropic / Gemini (provider-agnostic) |
-| Storage (current) | JSON files on disk |
-| Storage (planned) | PostgreSQL + Redis |
+| Backend API | Python, FastAPI, async SQLAlchemy |
+| Database | PostgreSQL (Neon) with asyncpg |
+| AI / Comprehension Engine | OpenAI / Anthropic / Gemini (provider-agnostic via OpenRouter) |
+| Frontend (current) | React (Vite) — split professor (port 5174) + student (port 5175) apps |
 | Extension (planned) | JavaScript/TypeScript, Chrome Extensions Manifest V3 |
-| Frontend Dashboard (planned) | React, TypeScript, Tailwind CSS |
 | Auth (planned) | SAML 2.0, OAuth 2.0, JWT |
 | Infrastructure (planned) | AWS / GCP, Docker |
 | LMS Integration (planned) | LTI 1.3, Canvas REST API, Blackboard REST API |

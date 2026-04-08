@@ -45,3 +45,35 @@ class SubmitResponse(BaseModel):
     ai_detection: Optional[dict]   # None if skip_detection=True
     quiz: Optional[dict]           # None if mode="summary"
     summary: Optional[str]         # None if mode="quiz"
+    style_analysis: Optional[dict] = None      # Style deviation if student_id provided
+    confidence_score: Optional[dict] = None    # Combined heuristic confidence score
+
+
+class StyleUpdateResponse(BaseModel):
+    student_id: str
+    submission_count: int
+    content_type: str
+    message: str
+
+
+class StyleProfileResponse(BaseModel):
+    student_id: str
+    submission_count: int
+    created_at: str
+    updated_at: str
+    quantitative_scalars: dict
+    quantitative_vectors: dict
+    qualitative: dict
+    submission_history: list
+
+
+class StyleCompareResponse(BaseModel):
+    student_id: str
+    style_deviation_score: float
+    quantitative_deviation: float
+    qualitative_deviation: float
+    top_deviations: list
+    sufficient_history: bool
+    submission_count: int
+    confidence_score: Optional[dict] = None
+    message: Optional[str] = None

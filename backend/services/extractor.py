@@ -1,5 +1,6 @@
 import pdfplumber
 from fastapi import UploadFile
+from sqlalchemy.ext.asyncio import AsyncSession
 from backend.services.submission_cache import get_cached, save_to_cache
 import io
 
@@ -18,12 +19,12 @@ def get_file_type(filename: str) -> str:
     else:
         return "text"
 
-async def extract_text(file: UploadFile) -> tuple[str, str]:
+async def extract_text(file: UploadFile, db: AsyncSession) -> tuple[str, str]:
     """Returns (extracted_text, file_type). Uses cache to skip re-extraction on retries."""
     content = await file.read()
 
     # Check cache first — same file uploaded again skips extraction
-    cached = get_cached(content)
+    cached = await get_cached(db, content)
     if cached:
         return cached["extracted_text"], cached["file_type"]
 
@@ -35,17 +36,17 @@ async def extract_text(file: UploadFile) -> tuple[str, str]:
         text = content.decode("utf-8", errors="replace")
 
     text = text.strip()
-    save_to_cache(content, text, file_type)
+    await save_to_cache(db, content, text, file_type)
     return text, file_type
 
 
-async def extract_text_multi(files: list[UploadFile]) -> tuple[str, str]:
+async def extract_text_multi(files: list[UploadFile], db: AsyncSession) -> tuple[str, str]:
     """Extract and concatenate text from multiple files (up to 10).
     Returns (combined_text, file_types_summary)."""
     all_texts = []
     file_types = []
     for f in files:
-        text, ftype = await extract_text(f)
+        text, ftype = await extract_text(f, db)
         all_texts.append(f"--- {f.filename} ---\n{text}")
         file_types.append(ftype)
     combined = "\n\n".join(all_texts)

@@ -52,8 +52,16 @@ Even if text avoids obvious AI words, it can still feel generated if:
 - Suspiciously uniform formatting throughout
 - Generic variable names that perfectly match textbook style
 
+=== LAYER 8: WRITING STYLE COMPARISON (if student profile provided) ===
+If a STUDENT WRITING STYLE PROFILE is included below, compare the submission against the student's known writing patterns:
+- Does the tone, formality, and confidence level match their historical style?
+- Do they use their characteristic phrases and sentence patterns?
+- Does the vocabulary complexity match what you'd expect from this student?
+- Are their usual quirks present or suspiciously absent?
+- A sudden shift in writing style (e.g., casual writer submitting formal academic prose) is a strong signal worth flagging.
+
 === FINAL ASSESSMENT ===
-After running all layers, ask yourself: does this sound like a specific person wrote it, or does it sound like it was assembled? If it feels assembled, it probably was.
+After running all layers, ask yourself: does this sound like a specific person wrote it, or does it sound like it was assembled? If a student profile was provided, also consider: does this sound like THIS specific student wrote it? If it feels assembled, it probably was.
 
 Respond in EXACTLY this JSON format, no other text:
 {
@@ -109,6 +117,84 @@ Respond in EXACTLY this JSON format, no other text:
 }}
 
 Score 0.0-1.0 where 0.7+ is passing."""
+
+STYLE_FINGERPRINT_PROSE_PROMPT = """You are a forensic writing analyst building an authorship profile. Analyze the following text and extract a structured writing style fingerprint.
+
+You will receive:
+1. The ASSIGNMENT SPECIFICATION — context for what the student was writing about.
+2. The STUDENT SUBMISSION — the text to analyze for style (NOT content quality).
+
+Evaluate EACH of the following dimensions. For each, give a 1-5 rating AND a brief description (1 sentence max):
+
+1. FORMALITY: 1=very casual/slang → 5=academic/formal
+2. CONFIDENCE: 1=hedging/uncertain ("maybe", "I think") → 5=assertive/declarative
+3. COMPLEXITY: 1=simple sentences, basic vocab → 5=complex clauses, advanced vocab
+4. CONCISENESS: 1=verbose/wordy → 5=terse/minimal
+5. VOICE: 1=exclusively passive → 5=exclusively active
+6. PERSPECTIVE: What person do they write in? (first/second/third/mixed)
+7. ARGUMENT_STYLE: How do they build arguments? (evidence-first / claim-first / narrative / list-based)
+8. EXPLANATION_PATTERN: How do they explain concepts? (analogy-heavy / definition-first / example-driven / abstract)
+9. TRANSITION_STYLE: How do they connect ideas? (explicit connectors / implicit flow / abrupt jumps)
+10. QUIRKS: Any distinctive patterns? (pet phrases, unusual punctuation habits, characteristic sentence openers, hedging patterns, humor usage)
+
+Also extract:
+- TOP_5_CHARACTERISTIC_PHRASES: 5 short phrases (2-4 words) that feel most characteristic of this writer's voice
+- OVERALL_IMPRESSION: 2-sentence summary of what makes this writing voice distinctive
+
+Respond in EXACTLY this JSON format, no other text:
+{
+    "formality": {"score": N, "note": "..."},
+    "confidence": {"score": N, "note": "..."},
+    "complexity": {"score": N, "note": "..."},
+    "conciseness": {"score": N, "note": "..."},
+    "voice": {"score": N, "note": "..."},
+    "perspective": "first/second/third/mixed",
+    "argument_style": {"score": N, "note": "..."},
+    "explanation_pattern": {"score": N, "note": "..."},
+    "transition_style": {"score": N, "note": "..."},
+    "quirks": "...",
+    "top_5_phrases": ["...", "...", "...", "...", "..."],
+    "overall_impression": "..."
+}"""
+
+STYLE_FINGERPRINT_CODE_PROMPT = """You are a forensic code analyst building a coding style profile. Analyze the following code and extract a structured coding style fingerprint.
+
+You will receive:
+1. The ASSIGNMENT SPECIFICATION — context for what the student was building.
+2. The STUDENT SUBMISSION — the code to analyze for style (NOT correctness).
+
+Evaluate EACH of the following dimensions. For each, give a 1-5 rating AND a brief description (1 sentence max):
+
+1. FORMALITY: 1=quick-and-dirty/hacky → 5=production-grade/enterprise style
+2. CONFIDENCE: 1=defensive (lots of checks, try/catch everywhere) → 5=assertive (minimal guards, trusts inputs)
+3. COMPLEXITY: 1=simple/linear → 5=heavy abstractions, design patterns, generics
+4. CONCISENESS: 1=verbose, explicit everything → 5=terse, one-liners, clever shortcuts
+5. VOICE: 1=textbook/tutorial style → 5=highly personal/opinionated style
+6. DECOMPOSITION: How do they break down problems? (monolithic / functional / OOP-heavy / mixed)
+7. NAMING_STYLE: How do they name things? (descriptive-long / abbreviated / domain-specific / generic)
+8. COMMENT_STYLE: How do they comment? (none / inline-sparse / block-headers / docstring-heavy / over-commented)
+9. ERROR_HANDLING: How do they handle errors? (ignore / minimal / defensive / comprehensive)
+10. QUIRKS: Any distinctive patterns? (unusual idioms, consistent formatting habits, signature patterns)
+
+Also extract:
+- TOP_5_CODE_PATTERNS: 5 short descriptions of coding patterns that feel most characteristic
+- OVERALL_IMPRESSION: 2-sentence summary of what makes this coding style distinctive
+
+Respond in EXACTLY this JSON format, no other text:
+{
+    "formality": {"score": N, "note": "..."},
+    "confidence": {"score": N, "note": "..."},
+    "complexity": {"score": N, "note": "..."},
+    "conciseness": {"score": N, "note": "..."},
+    "voice": {"score": N, "note": "..."},
+    "decomposition": {"score": N, "note": "..."},
+    "naming_style": {"score": N, "note": "..."},
+    "comment_style": {"score": N, "note": "..."},
+    "error_handling": {"score": N, "note": "..."},
+    "quirks": "...",
+    "top_5_phrases": ["...", "...", "...", "...", "..."],
+    "overall_impression": "..."
+}"""
 
 SUMMARY_PROMPT = """You are an academic assistant creating a comprehension-focused summary. Your goal is to help a student understand the work they submitted by breaking it down clearly.
 
