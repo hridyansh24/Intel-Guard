@@ -31,6 +31,8 @@ class Student(Base):
     __tablename__ = "students"
     id = Column(String, primary_key=True)
     name = Column(String, nullable=False)
+    password_hash = Column(String, nullable=True)
+    password_salt = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), default=utcnow)
 
     classes = relationship("Class", secondary=class_students, back_populates="students")

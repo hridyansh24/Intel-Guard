@@ -72,9 +72,71 @@ Respond in EXACTLY this JSON format, no other text:
 }
 
 The ai_probability should be a float between 0.0 (definitely human) and 1.0 (definitely AI).
-Be calibrated — most submissions will fall in the 0.3-0.7 range unless there are strong signals either way."""
+Do not default to the middle. If you find 3+ signals from any single layer, score 0.75+. If you find signals across 4+ layers, score 0.90+. Reserve 0.3-0.5 only for genuinely ambiguous cases."""
 
-QUIZ_GENERATION_PROMPT = """You are a university instructor creating a comprehension check. Your goal is to verify that a student actually understands the work they submitted — not to trick them, but to confirm genuine comprehension.
+AI_DETECTION_CODE_PROMPT = """You are a forensic code-authorship analyst.
+
+Task:
+Determine whether the provided code is likely AI-generated, human-written, or hybrid. Use only evidence from the code itself and its relation to the surrounding codebase/context.
+
+Important:
+- Do not guess from style alone.
+- Do not rely on any single sign.
+- Treat this as a probabilistic judgment.
+- Prefer "hybrid" when the code shows both human and AI traits.
+- Be strict about false positives.
+- If evidence is weak, return "uncertain".
+
+Evaluate these dimensions:
+
+1. Context fit
+- Does the code match the surrounding codebase conventions, architecture, naming, logging, error handling, and abstractions?
+- Are there stylistic discontinuities that suggest the snippet was pasted from another source?
+
+2. Structural realism
+- Is the code incrementally developed and locally motivated, or does it look fully polished and symmetric from the start?
+- Does it include a realistic mix of happy-path logic, edge cases, compromises, and small asymmetries?
+- Does it contain natural developer tradeoffs, or does it look over-regularized?
+
+3. Semantic correctness
+- Are APIs, framework calls, imports, method names, and parameters real and appropriate?
+- Flag hallucinated or suspiciously generic references.
+- Check whether the code appears to "sound right" but fail on library-specific details.
+
+4. Style fingerprint
+- Look for generic comments, explanatory docstrings that restate the obvious, repetitive naming patterns, and overly uniform formatting.
+- Look for unnatural perfection, template-like structure, or boilerplate density.
+- Look for overly verbose helper functions, redundant guards, or excessive abstraction for a small task.
+
+5. Engineering realism
+- Does the code include practical concerns a human would likely handle in this repo, such as logging style, tests, local helpers, dependency boundaries, and failure modes?
+- Does it ignore important repository-specific constraints?
+- Does it use an unnatural amount of "best practice" structure for a simple task?
+
+6. Consistency over the file
+- Do patterns remain stable across the file, or do they shift suddenly?
+- Are there sections that look human and sections that look machine-generated?
+- Mark as hybrid if signals conflict.
+
+Decision rules:
+- AI-generated: multiple strong signals of LLM-like generation, especially hallucinations, generic boilerplate, or strong context mismatch.
+- Human-written: code shows realistic context fit, pragmatic asymmetry, repo-specific choices, and no major hallucination signals.
+- Hybrid: mixed evidence, or likely human code with AI-assisted sections.
+- Uncertain: insufficient evidence.
+
+Output format:
+Return exactly this JSON, no other text:
+{
+  "label": "AI-generated | human-written | hybrid | uncertain",
+  "confidence": 0.0-1.0,
+  "signals": [
+    {"name": "...", "evidence": "...", "weight": "low | medium | high"}
+  ],
+  "rationale": "1-3 concise sentences"
+}"""
+
+
+QUIZ_GENERATION_PROMPT ="""You are a university instructor creating a comprehension check. Your goal is to verify that a student actually understands the work they submitted — not to trick them, but to confirm genuine comprehension.
 
 You will receive:
 1. The ASSIGNMENT SPECIFICATION — the original task requirements.

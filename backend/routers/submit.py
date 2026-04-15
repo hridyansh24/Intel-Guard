@@ -12,7 +12,7 @@ from backend.services.submission_store import save_submission as _save_sub
 from backend.services.student_store import get_student
 from backend.services.class_store import get_context_settings
 from backend.prompts import (
-    AI_DETECTION_SYSTEM_PROMPT, QUIZ_GENERATION_PROMPT, SUMMARY_PROMPT,
+    AI_DETECTION_SYSTEM_PROMPT, AI_DETECTION_CODE_PROMPT, QUIZ_GENERATION_PROMPT, SUMMARY_PROMPT,
     STYLE_FINGERPRINT_PROSE_PROMPT, STYLE_FINGERPRINT_CODE_PROMPT,
 )
 from backend.schemas import SubmitResponse
@@ -80,7 +80,12 @@ async def submit(
             )
             if style_summary:
                 detect_msg += f"\n\nSTUDENT WRITING STYLE PROFILE:\n{style_summary}"
-            detection = await call_llm_json(AI_DETECTION_SYSTEM_PROMPT, detect_msg)
+            is_code = "code" in file_type and "text" not in file_type and "pdf" not in file_type
+            prompt = AI_DETECTION_CODE_PROMPT if is_code else AI_DETECTION_SYSTEM_PROMPT
+            detection = await call_llm_json(prompt, detect_msg)
+            if is_code:
+                from backend.routers.analyze import _map_code_result
+                detection = _map_code_result(detection)
             await save_result(db, context_id, submission_text, "analyze", detection)
         result["ai_detection"] = detection
         ai_probability = detection.get("ai_probability")

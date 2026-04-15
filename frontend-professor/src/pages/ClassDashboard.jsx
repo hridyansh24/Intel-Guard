@@ -79,7 +79,7 @@ export default function ClassDashboard({ classId, onBack }) {
           <AssignmentsTab cls={cls} classContexts={classContexts} allContexts={allContexts} classId={classId} onRefresh={fetchData} />
         )}
         {tab === 'students' && (
-          <StudentsTab students={students} />
+          <StudentsTab students={students} classId={classId} classContexts={classContexts} />
         )}
         {tab === 'submissions' && (
           <SubmissionsTab classId={classId} classContexts={classContexts} students={students} />
@@ -253,7 +253,9 @@ function AssignmentCard({ ctx, classId, onRefresh }) {
 }
 
 /* === Students Tab === */
-function StudentsTab({ students }) {
+function StudentsTab({ students, classId, classContexts }) {
+  const [expandedId, setExpandedId] = useState(null)
+
   if (students.length === 0) {
     return (
       <div className="empty-state">
@@ -271,19 +273,169 @@ function StudentsTab({ students }) {
         {students.length} student{students.length !== 1 ? 's' : ''} enrolled
       </div>
       {students.map(s => (
-        <div key={s.student_id} className="card" style={{ padding: 16, display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{
-            width: 36, height: 36, borderRadius: '50%', background: 'var(--accent-soft)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-            fontWeight: 700, fontSize: 14, color: 'var(--accent)',
-          }}>
-            {s.name.charAt(0).toUpperCase()}
-          </div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 600, color: 'var(--text-bright)', fontSize: 14 }}>{s.name}</div>
-          </div>
-        </div>
+        <StudentRow
+          key={s.student_id}
+          student={s}
+          classId={classId}
+          classContexts={classContexts}
+          expanded={expandedId === s.student_id}
+          onToggle={() => setExpandedId(expandedId === s.student_id ? null : s.student_id)}
+        />
       ))}
+    </div>
+  )
+}
+
+function StudentRow({ student, classId, classContexts, expanded, onToggle }) {
+  const [subs, setSubs] = useState(null)
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (!expanded || subs !== null) return
+    setLoading(true)
+    listSubmissions(classId, student.student_id)
+      .then(setSubs)
+      .catch(() => setSubs([]))
+      .finally(() => setLoading(false))
+  }, [expanded])
+
+  // Group submissions by context_id
+  const byAssignment = {}
+  ;(subs || []).forEach(s => {
+    const key = s.context_id || 'unknown'
+    if (!byAssignment[key]) byAssignment[key] = []
+    byAssignment[key].push(s)
+  })
+
+  // Aggregate totals across all attempts for this student
+  let totalPassed = 0, totalQuestions = 0, attemptCount = 0, aiSum = 0, aiCount = 0
+  ;(subs || []).forEach(s => {
+    if (s.quiz_results?.total != null) {
+      totalPassed += s.quiz_results.passed || 0
+      totalQuestions += s.quiz_results.total || 0
+      attemptCount += 1
+    }
+    if (s.ai_detection?.ai_probability != null) {
+      aiSum += s.ai_detection.ai_probability
+      aiCount += 1
+    }
+  })
+  const avgAi = aiCount > 0 ? aiSum / aiCount : null
+
+  return (
+    <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+      <div
+        onClick={onToggle}
+        style={{ padding: 16, display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer' }}
+      >
+        <div style={{
+          width: 36, height: 36, borderRadius: '50%', background: 'var(--accent-soft)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+          fontWeight: 700, fontSize: 14, color: 'var(--accent)',
+        }}>
+          {student.name.charAt(0).toUpperCase()}
+        </div>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontWeight: 600, color: 'var(--text-bright)', fontSize: 14 }}>{student.name}</div>
+          <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2 }}>ID: {student.student_id}</div>
+        </div>
+        {subs && subs.length > 0 && (
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            {totalQuestions > 0 && (
+              <span className={`badge ${totalPassed === totalQuestions ? 'badge-green' : totalPassed >= totalQuestions * 0.6 ? 'badge-yellow' : 'badge-red'}`}>
+                Quiz: {totalPassed}/{totalQuestions}
+              </span>
+            )}
+            {avgAi != null && (
+              <span className={`badge ${avgAi > 0.7 ? 'badge-red' : avgAi > 0.4 ? 'badge-yellow' : 'badge-green'}`}>
+                Avg AI: {(avgAi * 100).toFixed(0)}%
+              </span>
+            )}
+            <span className="badge">{subs.length} submission{subs.length !== 1 ? 's' : ''}</span>
+          </div>
+        )}
+        <div style={{ color: 'var(--text-dim)', fontSize: 18, marginLeft: 8 }}>{expanded ? '▾' : '▸'}</div>
+      </div>
+
+      {expanded && (
+        <div style={{ padding: 16, paddingTop: 0, borderTop: '1px solid var(--border)' }}>
+          {loading ? (
+            <div style={{ textAlign: 'center', padding: 24 }}><div className="spinner" style={{ margin: '0 auto' }} /></div>
+          ) : !subs || subs.length === 0 ? (
+            <div style={{ color: 'var(--text-dim)', fontSize: 13, padding: 12 }}>No submissions from this student yet.</div>
+          ) : (
+            <div className="stack-sm" style={{ marginTop: 12 }}>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>
+                {attemptCount} quiz attempt{attemptCount !== 1 ? 's' : ''} · {totalPassed}/{totalQuestions} total correct
+              </div>
+              {Object.entries(byAssignment).map(([ctxId, attempts]) => {
+                const title = classContexts.find(c => c.context_id === ctxId)?.title
+                  || attempts[0].context_title || 'Unknown assignment'
+                let aPassed = 0, aTotal = 0
+                attempts.forEach(a => {
+                  if (a.quiz_results?.total != null) {
+                    aPassed += a.quiz_results.passed || 0
+                    aTotal += a.quiz_results.total || 0
+                  }
+                })
+                return (
+                  <div key={ctxId} style={{ background: 'var(--bg-elevated)', borderRadius: 8, padding: 12 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                      <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--text-bright)' }}>{title}</div>
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        {aTotal > 0 && (
+                          <span className={`badge ${aPassed === aTotal ? 'badge-green' : aPassed >= aTotal * 0.6 ? 'badge-yellow' : 'badge-red'}`}>
+                            {aPassed}/{aTotal}
+                          </span>
+                        )}
+                        <span className="badge">{attempts.length} attempt{attempts.length !== 1 ? 's' : ''}</span>
+                      </div>
+                    </div>
+                    <div className="stack-sm">
+                      {attempts.map((a, i) => {
+                        const ai = a.ai_detection?.ai_probability
+                        const conf = a.confidence_score?.confidence
+                        const level = a.confidence_score?.level
+                        const quiz = a.quiz_results
+                        return (
+                          <div key={a.submission_id} style={{ fontSize: 12, padding: 8, background: 'var(--bg)', borderRadius: 6 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                              <span style={{ color: 'var(--text-muted)' }}>Attempt {i + 1}</span>
+                              <span style={{ color: 'var(--text-dim)' }}>{new Date(a.timestamp).toLocaleString()}</span>
+                            </div>
+                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                              {ai != null && (
+                                <span className={`badge ${ai > 0.7 ? 'badge-red' : ai > 0.4 ? 'badge-yellow' : 'badge-green'}`}>
+                                  AI: {(ai * 100).toFixed(0)}%
+                                </span>
+                              )}
+                              {conf != null && (
+                                <span className={`badge ${level === 'high' ? 'badge-red' : level === 'elevated' ? 'badge-orange' : level === 'moderate' ? 'badge-yellow' : 'badge-green'}`}>
+                                  Confidence: {(conf * 100).toFixed(0)}%
+                                </span>
+                              )}
+                              {quiz?.total != null && (
+                                <span className={`badge ${quiz.passed === quiz.total ? 'badge-green' : 'badge-yellow'}`}>
+                                  Quiz: {quiz.passed}/{quiz.total} ({quiz.total - quiz.passed} wrong)
+                                </span>
+                              )}
+                              {a.style_analysis?.style_deviation_score != null && (
+                                <span className={`badge ${a.style_analysis.style_deviation_score > 0.6 ? 'badge-red' : a.style_analysis.style_deviation_score > 0.3 ? 'badge-yellow' : 'badge-green'}`}>
+                                  Style dev: {(a.style_analysis.style_deviation_score * 100).toFixed(0)}%
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

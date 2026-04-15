@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { registerStudent, getStudent } from './api'
+import { registerStudent, loginStudent, getStudent } from './api'
 import Dashboard from './pages/Dashboard'
 
 export default function App() {
@@ -18,10 +18,9 @@ export default function App() {
     }
   }, [])
 
-  const handleRegister = async (name) => {
-    const s = await registerStudent(name)
-    localStorage.setItem('ai_guard_student', JSON.stringify(s))
-    setStudent(s)
+  const handleAuth = async (result) => {
+    localStorage.setItem('ai_guard_student', JSON.stringify(result))
+    setStudent(result)
   }
 
   const handleLogout = () => {
@@ -31,26 +30,47 @@ export default function App() {
 
   if (loading) return null
 
-  if (!student) return <SignupPage onRegister={handleRegister} />
+  if (!student) return <AuthPage onAuth={handleAuth} />
   return <Dashboard student={student} onLogout={handleLogout} />
 }
 
-function SignupPage({ onRegister }) {
+function AuthPage({ onAuth }) {
+  const [mode, setMode] = useState('signup') // 'signup' | 'login'
   const [name, setName] = useState('')
+  const [studentId, setStudentId] = useState('')
+  const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [justRegisteredId, setJustRegisteredId] = useState('')
 
   const handleSubmit = async (e) => {
     e.preventDefault()
-    if (!name.trim()) return setError('Enter your name')
     setError('')
-    setLoading(true)
     try {
-      await onRegister(name.trim())
+      if (mode === 'signup') {
+        if (!name.trim()) return setError('Enter your name')
+        if (password.length < 4) return setError('Password must be at least 4 characters')
+        setLoading(true)
+        const s = await registerStudent(name.trim(), password)
+        setJustRegisteredId(s.student_id)
+        await onAuth(s)
+      } else {
+        if (!studentId.trim()) return setError('Enter your student ID')
+        if (!password) return setError('Enter your password')
+        setLoading(true)
+        const s = await loginStudent(studentId.trim(), password)
+        await onAuth(s)
+      }
     } catch (e) {
       setError(e.message)
       setLoading(false)
     }
+  }
+
+  const switchMode = (m) => {
+    setMode(m)
+    setError('')
+    setPassword('')
   }
 
   return (
@@ -73,24 +93,65 @@ function SignupPage({ onRegister }) {
           <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>Student Portal</p>
         </div>
 
+        <div style={{ display: 'flex', gap: 4, marginBottom: 20, padding: 4, background: 'var(--bg-elevated)', borderRadius: 8 }}>
+          <button
+            type="button"
+            onClick={() => switchMode('signup')}
+            style={{
+              flex: 1, padding: '8px 12px', borderRadius: 6, border: 'none', cursor: 'pointer',
+              background: mode === 'signup' ? 'var(--accent)' : 'transparent',
+              color: mode === 'signup' ? '#fff' : 'var(--text-muted)',
+              fontSize: 13, fontWeight: 600,
+            }}
+          >Sign Up</button>
+          <button
+            type="button"
+            onClick={() => switchMode('login')}
+            style={{
+              flex: 1, padding: '8px 12px', borderRadius: 6, border: 'none', cursor: 'pointer',
+              background: mode === 'login' ? 'var(--accent)' : 'transparent',
+              color: mode === 'login' ? '#fff' : 'var(--text-muted)',
+              fontSize: 13, fontWeight: 600,
+            }}
+          >Log In</button>
+        </div>
+
         <form onSubmit={handleSubmit}>
+          {mode === 'signup' ? (
+            <div style={{ marginBottom: 16 }}>
+              <div className="label">Your Name</div>
+              <input value={name} onChange={e => setName(e.target.value)} placeholder="Enter your full name" autoFocus />
+            </div>
+          ) : (
+            <div style={{ marginBottom: 16 }}>
+              <div className="label">Student ID</div>
+              <input value={studentId} onChange={e => setStudentId(e.target.value)} placeholder="e.g. a1b2c3d4" autoFocus />
+            </div>
+          )}
+
           <div style={{ marginBottom: 16 }}>
-            <div className="label">Your Name</div>
-            <input
-              value={name}
-              onChange={e => setName(e.target.value)}
-              placeholder="Enter your full name"
-              autoFocus
-            />
+            <div className="label">Password</div>
+            <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder={mode === 'signup' ? 'Choose a password' : 'Enter your password'} />
           </div>
+
           {error && <div style={{ color: 'var(--red)', fontSize: 13, marginBottom: 12 }}>{error}</div>}
+
           <button className="btn btn-primary" style={{ width: '100%' }} disabled={loading}>
-            {loading ? <><div className="spinner" style={{ width: 14, height: 14 }} /> Signing up...</> : 'Sign Up'}
+            {loading
+              ? <><div className="spinner" style={{ width: 14, height: 14 }} /> {mode === 'signup' ? 'Signing up...' : 'Logging in...'}</>
+              : (mode === 'signup' ? 'Sign Up' : 'Log In')}
           </button>
         </form>
 
+        {justRegisteredId && mode === 'signup' && (
+          <div style={{ marginTop: 16, padding: 12, background: 'var(--accent-soft)', borderRadius: 8, fontSize: 12, color: 'var(--text-bright)' }}>
+            Your Student ID: <strong>{justRegisteredId}</strong><br />
+            Save this — you'll need it to log in next time.
+          </div>
+        )}
+
         <p style={{ color: 'var(--text-dim)', fontSize: 12, textAlign: 'center', marginTop: 16 }}>
-          Sign up to join classes and submit assignments
+          {mode === 'signup' ? 'Sign up to join classes and submit assignments' : 'Log in to access your submissions'}
         </p>
       </div>
     </div>

@@ -10,11 +10,19 @@ async function request(path, options = {}) {
 }
 
 // Students
-export async function registerStudent(name) {
+export async function registerStudent(name, password) {
   return request('/students/register', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, password }),
+  });
+}
+
+export async function loginStudent(studentId, password) {
+  return request('/students/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ student_id: studentId, password }),
   });
 }
 
