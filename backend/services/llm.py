@@ -40,10 +40,16 @@ def _call_llm_sync(system_prompt: str, user_message: str, model: str) -> str:
 
     elif provider == "anthropic":
         client = _get_anthropic_client()
+        # Mark system prompt for ephemeral prompt caching (5-min TTL).
+        # First call: ~25% write premium; subsequent hits: ~10% of input cost.
         response = client.messages.create(
             model=model,
-            max_tokens=2048,
-            system=system_prompt,
+            max_tokens=4096,
+            system=[{
+                "type": "text",
+                "text": system_prompt,
+                "cache_control": {"type": "ephemeral"},
+            }],
             messages=[{"role": "user", "content": user_message}],
         )
         return response.content[0].text

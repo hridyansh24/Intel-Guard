@@ -64,12 +64,12 @@ async def pick_from_pool(
     served = set(record.served_indices or [])
     remaining = [i for i in range(len(pool)) if i not in served]
 
-    if len(remaining) < num_questions:
+    if len(remaining) == 0:
         await db.delete(record)
         await db.commit()
         return None
 
-    chosen = random.sample(remaining, num_questions)
+    chosen = random.sample(remaining, min(num_questions, len(remaining)))
     served.update(chosen)
     record.served_indices = list(served)
     await db.commit()

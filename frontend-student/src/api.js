@@ -69,7 +69,7 @@ export async function submitWork(contextId, files, mode = 'quiz', numQuestions =
 }
 
 // Quiz
-export async function evaluateAnswer(contextId, submissionText, question, studentAnswer) {
+export async function evaluateAnswer(contextId, submissionText, question, chosenIndex) {
   return request('/quiz/evaluate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -77,7 +77,7 @@ export async function evaluateAnswer(contextId, submissionText, question, studen
       context_id: contextId,
       submission_text: submissionText,
       question,
-      student_answer: studentAnswer,
+      chosen_index: chosenIndex,
     }),
   });
 }

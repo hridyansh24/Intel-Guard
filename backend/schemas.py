@@ -17,6 +17,7 @@ class AnalyzeResponse(BaseModel):
 
 class QuizQuestion(BaseModel):
     question: str
+    options: list[str] = []
     question_number: int
 
 class QuizResponse(BaseModel):
@@ -27,12 +28,14 @@ class EvaluateRequest(BaseModel):
     context_id: str
     submission_text: str
     question: str
-    student_answer: str
+    chosen_index: int
 
 class EvaluateResponse(BaseModel):
     passed: bool
     score: float                   # 0.0 - 1.0
     feedback: str
+    correct_index: int = -1
+    chosen_index: int = -1
 
 class SummaryResponse(BaseModel):
     context_id: str

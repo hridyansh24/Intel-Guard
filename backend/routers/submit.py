@@ -129,8 +129,10 @@ async def submit(
             raw = await call_llm_json(system, quiz_msg)
             if "_parse_failed" not in raw:
                 p = raw.get("questions", [])
+                print(f"QUIZ POOL: generated {len(p)} questions (requested {pool_size})")
                 await save_quiz_pool(db, context_id, submission_text, p)
                 return p, None
+            print(f"QUIZ POOL: parse failed — {str(raw.get('_raw',''))[:200]}")
             return [], raw
 
         pool = await get_quiz_pool(db, context_id, submission_text)
@@ -145,9 +147,15 @@ async def submit(
                 if pool:
                     questions = await pick_from_pool(db, pool, num_questions, context_id, submission_text)
             if questions:
+                client_questions = []
                 for q in questions:
-                    q["formatted"] = f"Q{q['question_number']}: {q['question']}"
-                result["quiz"] = {"questions": questions}
+                    client_questions.append({
+                        "question": q.get("question", ""),
+                        "options": q.get("options", []),
+                        "question_number": q.get("question_number", 0),
+                        "formatted": f"Q{q.get('question_number', 0)}: {q.get('question', '')}",
+                    })
+                result["quiz"] = {"questions": client_questions}
             else:
                 result["quiz"] = quiz_err
         else:

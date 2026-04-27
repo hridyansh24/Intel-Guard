@@ -6,7 +6,7 @@ Academic integrity platform — detects AI-generated submissions and verifies st
 ## Tech stack
 - **Backend:** Python, FastAPI, uvicorn
 - **Frontend:** React (Vite), React Router — dark theme with blue accent
-- **LLM:** Provider-agnostic (OpenAI/Anthropic/Gemini) — configured via `.env`
+- **LLM:** Provider-agnostic (OpenAI/Anthropic/Gemini) — configured via `.env`. Currently using Anthropic Claude API (Sonnet 4.5 primary, Haiku 4.5 mini) with prompt caching.
 - **PDF parsing:** pdfplumber
 - **Config:** pydantic-settings, python-dotenv
 - **Database:** PostgreSQL (async via SQLAlchemy + asyncpg) — Supabase or Neon for deployment
@@ -80,7 +80,7 @@ backend/
 ## Key concepts
 - **Context** = assignment specification. Uploaded first, referenced by `context_id` in all subsequent calls. Every LLM call gets the assignment spec injected into the system prompt so questions/analysis are grounded in what was actually assigned.
 - **Analyze** = AI detection. Uses an 8-layer prompt: content-level, word-level, grammar, formatting, communication artifacts, "soulless but clean" test, code-specific signals, and **Layer 8: writing style comparison** (when student profile is available, the LLM compares submission against the student's known writing patterns).
-- **Quiz** = comprehension verification. Two-step: generate questions, then evaluate student answers.
+- **Quiz** = comprehension verification via MCQ. Questions are 4-option multiple-choice with pre-generated explanations per option. Grading is deterministic (no LLM call) — backend matches chosen_index against stored correct_index. Anti-hallucination rules enforce that all options are grounded in literal submission/spec text.
 - **Summary** = comprehension walkthrough. Student-friendly, structured so they can't just scroll past.
 - **Style** = writing style fingerprinting. Hybrid quantitative (~80 metrics) + qualitative (LLM-rated) analysis. Per-student profiles updated incrementally via Welford's online algorithm. Computes deviation score on new submissions. Generates a `style_summary` (natural language description) stored in DB and injected into AI detection prompts for personalized analysis.
 - **Confidence Score** = combined heuristic score. Formula: `raw = W_AI(0.50) × ai_prob + W_STYLE(0.35) × style_dev + W_TIME(0.15) × time_anomaly`, then `confidence = raw × (1 - quiz_score × 0.65)`. Thresholds: <0.25 low, 0.25-0.45 moderate, 0.45-0.65 elevated (quiz), 0.65+ high (quiz + flag).
@@ -89,11 +89,12 @@ backend/
 - **Submission Record** = persisted record of a student's submission with AI detection, style analysis, confidence score, and quiz results. Stored in `submissions` table (JSONB columns for complex results). Created automatically when student submits via `/submit/` with both `student_id` and `class_id`.
 
 ## Cost optimizations
-- **Dual-model routing:** Primary model for detection, quiz generation, summary. Mini model for evaluating quiz answers — the most frequent call (~3× per submission). Currently using free OpenRouter models (see `.env`).
+- **Dual-model routing:** Primary model (Sonnet 4.5) for detection, quiz generation, summary. Mini model (Haiku 4.5) for style fingerprinting qualitative analysis. Quiz evaluation is now deterministic (MCQ) — no LLM call needed.
 - **Submission caching:** Extracted text is cached by SHA-256 hash. Re-uploading the same file (retries) skips extraction entirely.
 - **Optional AI detection:** `POST /submit/` accepts `skip_detection=True` for quiz-everyone mode. Saves one full primary-model call per submission (~20% cost reduction).
 - **LLM result caching (`result_cache.py`):** Caches LLM responses in PostgreSQL keyed by `hash(context_id + submission_text + operation)`. Analyze, quiz, and summary results are all cached — same submission against the same assignment never triggers a repeat LLM call. Cache is shared across endpoints (e.g., `/analyze/` and `/submit/` hit the same cache key for detection).
-- **Quiz question pool with exhaustion refresh:** Instead of generating `num_questions` per attempt, the first call generates `num_questions * 4` (e.g., 12 for a 3-question quiz) and caches the pool. Each retry serves unseen questions only — tracked via `served_indices` in the cache file. When all questions have been served (e.g., after 4 attempts of 3 questions from a pool of 12), the pool is automatically deleted and a fresh batch of 12 is generated from the LLM. Cost overhead is ~10-15% extra output tokens per pool generation; all attempts within a pool are free.
+- **MCQ quiz with deterministic grading:** Quiz evaluation no longer calls the LLM. Questions are pre-generated as 4-option MCQs with `correct_index` and per-option `explanations` stored server-side. Client receives only `{question, options, question_number}` (answers stripped). On evaluate, backend matches `chosen_index` against stored answer — zero cost per quiz attempt.
+- **Quiz question pool with exhaustion refresh:** First call generates `num_questions * 4` (e.g., 12 for a 3-question quiz) MCQs and caches the pool. Each retry serves unseen questions only — tracked via `served_indices`. When all exhausted, pool is deleted and regenerated. If pool has fewer than requested questions, serves what's available instead of failing.
 
 ### Cost metrics summary
 | Optimization | What it saves | When it kicks in |
@@ -120,7 +121,9 @@ Assuming a `/submit/` call with detection + quiz (3 questions) + summary, ~2000 
 - LLM calls always go through `services/llm.py` — never call provider SDKs directly from routers
 - `call_llm()` is async — all LLM calls run in a thread pool to avoid blocking the event loop
 - Use `call_llm_json()` when you expect structured JSON back — it retries once and strips markdown fences
-- Use `use_mini=True` for high-frequency, simpler LLM tasks (answer evaluation)
+- Use `use_mini=True` for high-frequency, simpler LLM tasks (style fingerprinting qualitative analysis)
+- Anthropic prompt caching enabled — system prompts use `cache_control: {"type": "ephemeral"}` (5-min TTL, 10% cost on cache hits)
+- `max_tokens` set to 4096 for Anthropic (needed for MCQ pool generation with 12 questions + explanations)
 - All LLM system prompts live in `prompts.py` — routers import from there, never define prompts inline
 - File extraction always goes through `services/extractor.py`
 - Accepts any file type: PDF, code files (.py, .js, .java, .cpp, etc.), plain text
@@ -137,14 +140,15 @@ Assuming a `/submit/` call with detection + quiz (3 questions) + summary, ~2000 
 | GET | `/context/{id}` | Get a specific context |
 | POST | `/analyze/` | Upload 1-10 submission files + `context_id` → AI detection (7-layer) |
 | POST | `/quiz/generate` | Submission text + `context_id` → comprehension questions |
-| POST | `/quiz/evaluate` | Student answer + question + context → pass/fail (uses mini model) |
+| POST | `/quiz/evaluate` | MCQ answer (chosen_index + question text) → deterministic pass/fail + explanation (no LLM call) |
 | POST | `/summary/` | Submission text + `context_id` → comprehension walkthrough |
 | POST | `/submit/` | Combined endpoint: 1-10 files, detect → style → quiz/summary. Optional `student_id` + `class_id` for tracking. |
 | POST | `/style/update` | Upload submission files + `student_id` + `context_id` → update student's style profile |
 | GET | `/style/profiles` | List all student style profiles |
 | GET | `/style/{student_id}` | Get a student's full style profile |
 | POST | `/style/compare` | Upload files + `student_id` + `context_id` → compare against historical profile, return deviation score |
-| POST | `/students/register` | Register student (name) → returns `student_id` |
+| POST | `/students/register` | Register student (name + password) → returns `student_id` |
+| POST | `/students/login` | Login student (student_id + password) → returns student info |
 | GET | `/students/` | List all students |
 | GET | `/students/{id}` | Get a student |
 | POST | `/classes/` | Create a class (name) → returns `class_id` |
@@ -162,7 +166,12 @@ Assuming a `/submit/` call with detection + quiz (3 questions) + summary, ~2000 
 ## Current status
 - **Renamed from Intel Guard → AI Guard** (2026-04-05) — placeholder name, final name TBD
 - Backend is functional and tested — analyze, submit, quiz generate all confirmed working
-- Using OpenRouter with free models: `z-ai/glm-4.5-air:free` (primary) and `nvidia/nemotron-3-nano-30b-a3b:free` (mini)
+- Using Anthropic Claude API: `claude-sonnet-4-5` (primary) and `claude-haiku-4-5` (mini) with prompt caching enabled
+- **Code-specific AI detection** (added 2026-04-15): separate forensic code-authorship prompt (`AI_DETECTION_CODE_PROMPT`) used when file_type is code. Evaluates 6 dimensions (context fit, structural realism, semantic correctness, style fingerprint, engineering realism, consistency). 3+ medium/high signals → escalates to 90%+ AI probability.
+- **Prompt compression** (2026-04-15): all prompts in `prompts.py` compressed ~30-40% — cut filler/boilerplate, kept all details and examples
+- **Student password auth** (added 2026-04-15): students register with name + password (PBKDF2-SHA256), login with student_id + password. `POST /students/login` endpoint added.
+- **MCQ quiz system** (added 2026-04-15): quizzes are now 4-option MCQ with deterministic grading. Anti-hallucination prompt enforces all options grounded in submission text. No LLM call for evaluation.
+- **Professor students tab** (enhanced 2026-04-15): click student to expand submissions grouped by assignment, aggregated quiz scores across attempts, per-attempt badges (AI %, confidence, quiz score, style deviation)
 - Multi-file upload (up to 10 files) supported on context, analyze, and submit endpoints — form field is `files` (not `file`)
 - `call_llm()` handles None responses from free models (returns empty string instead of crashing)
 - **Split frontend architecture** (refactored 2026-04-08) — two separate Vite React apps sharing the same design system:
@@ -204,10 +213,44 @@ Assuming a `/submit/` call with detection + quiz (3 questions) + summary, ~2000 
   - Tables auto-created on startup via `create_all`
 - Two-person team, `dev` branch not yet created
 
+## Planned improvements — Ipeirotis-inspired (roadmap, not yet implemented)
+Inspired by Panos Ipeirotis & Konstantinos Rizakos, "Scalable and Personalized Oral Assessments Using Voice AI" (arXiv:2603.18221, NYU Stern, Fall 2025). Their work: voice-agent oral exams graded by a 3-model "council of LLMs" (Claude + Gemini + GPT) that deliberate and revise. We keep AI Guard async/text-based and LMS-extension-bound — no voice, no scheduled exams — but steal the architectural ideas below.
+
+1. **LLM Council for borderline cases** — currently only Claude judges AI detection. Add a deliberation step: when raw confidence lands in the 0.45–0.65 "elevated" band, fire a council of models, each evaluates independently, then sees others' verdicts **with model identity stripped** (prevents deference bias), then a chairman synthesizes. Adopted from Karpathy's `llm-council` (github.com/karpathy/llm-council) — same 3-stage pattern Ipeirotis uses.
+   - **Stages:** (1) independent first opinions, (2) anonymized peer review, (3) chairman synthesis.
+   - **Roles:** Sonnet 4.5 = chairman (final synthesis). Haiku 4.5 + Gemini Flash (or a second Anthropic call with different prompt) = council members. Keeps cost low.
+   - **Where:** `services/llm.py` — new `call_llm_council()` that takes initial verdict + evidence, runs the 3 stages. Triggered from `routers/submit.py` after confidence is computed, before save.
+   - **Cost:** only fires on ambiguous submissions; clean and clearly-AI submissions skip it.
+   - **Win:** defensible accuracy on the cases that would otherwise false-flag a real student or miss a cheater. If council splits, surface "models disagreed" to professor rather than forcing a verdict.
+   - **Open question:** use OpenRouter for multi-provider access (one key, one bill, loses Anthropic-native prompt caching) vs. direct SDKs per provider (keeps caching, more integration work). Defer until implementation.
+
+2. **Adaptive follow-up question** — MCQs are static; a lucky-guess student aces 3 and walks. Add one generated follow-up that reads the student's actual answer pattern (including which wrong options they picked) and probes the specific misconception. Still MCQ, still deterministic grading. Fires only if submission already flagged OR answer pattern is suspicious (too fast, unusual correct/incorrect mix).
+   - **Where:** `routers/quiz.py` — new `/quiz/followup` endpoint taking prior answers + submission + context, generates one targeted MCQ.
+   - **Why it breaks cheating:** an AI-authored submission can be quiz-aced via copy-paste, but a question grounded in *their specific wrong answers* requires real comprehension.
+
+3. **Open-response tier for red-flag submissions** — Ipeirotis uses open-response for everyone (via voice); we use MCQ (cheap). Don't pick — pyramid:
+   - Tier 1 (everyone): MCQ, deterministic, free on retries.
+   - Tier 2 (flagged, confidence > 0.65): one short-answer question, graded by LLM council.
+   - Tier 3 (disputed): professor-reviewed with full evidence trail.
+   - **Where:** new `routers/openresponse.py`, triggered from `submit.py` when confidence threshold crossed.
+   - **Pitch:** "we burn open-response budget only on the 10% that matter."
+
+4. **Structured evidence report (first-class object)** — 8-layer detection already produces evidence but it's buried in the response. Surface it: each layer → claim → literal quote from submission → confidence. Professors skim in 30 seconds and can defend a flag to a student.
+   - **Where:** `schemas.py` — new `EvidenceReport` model. `prompts.py` — tighten AI detection prompt output format to enforce per-layer evidence with quotes.
+   - **Moat:** a "72% confidence" number doesn't survive a student challenge. A quoted evidence report does. This is our differentiator vs. GPTZero.
+
+**Implementation order when limit resets:** #1 first (1 day, uses existing infra, enables #3). Then #4 (schema + prompt tightening). Then #2 and #3 together (both build on follow-up-question infra).
+
+**Reference artifacts (not a full repo — just prompts):**
+- Voice agent prompt: https://gist.github.com/ipeirotis/0d9d5747e6270cf6d65a6bf9d162e421
+- Grading council prompt: https://gist.github.com/ipeirotis/99418caa6afae72fb7eec63855632c68
+- Karpathy's llm-council pattern: https://github.com/karpathy/llm-council
+
 ## Design decisions
 - Context (assignment spec) is a first-class object — stored once, referenced by ID everywhere
 - AI detection uses heuristic prompt engineering, not a third-party detection API
-- The 7-layer detection prompt checks: content inflation, AI vocabulary, grammar tells, formatting tells, chatbot artifacts, "soulless but clean" test, code-specific signals
+- The 8-layer detection prompt checks: content inflation, AI vocabulary, grammar tells, formatting tells, chatbot artifacts, "soulless but clean" test, code-specific signals, writing style comparison (Layer 8)
+- Code submissions use a separate forensic code-authorship prompt (`AI_DETECTION_CODE_PROMPT`) with 6 analysis dimensions and automatic escalation (3+ medium/high signals → 90%+ probability)
 - Quiz questions are grounded in the assignment spec so they test real understanding, not trivia
 - Summary mode is an alternative to quiz — instructor chooses which mode to use
 - Style-aware AI detection: when a student has a style profile, their `style_summary` is injected into the AI detection prompt so the LLM can compare the submission against the student's known writing patterns. The summary is auto-generated from accumulated qualitative data (no extra LLM call).

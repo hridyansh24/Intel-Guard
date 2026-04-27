@@ -1,6 +1,11 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
 import { registerStudent, loginStudent, getStudent } from './api'
 import Dashboard from './pages/Dashboard'
+import ShieldOrb from './three/ShieldOrb'
+import ParticleField from './three/ParticleField'
+import Logo from './components/Logo'
+import MagneticButton from './components/MagneticButton'
 
 export default function App() {
   const [student, setStudent] = useState(null)
@@ -28,20 +33,46 @@ export default function App() {
     setStudent(null)
   }
 
-  if (loading) return null
+  if (loading) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center' }}>
+        <div className="loader-dots"><span /><span /><span /></div>
+      </div>
+    )
+  }
 
-  if (!student) return <AuthPage onAuth={handleAuth} />
-  return <Dashboard student={student} onLogout={handleLogout} />
+  return (
+    <AnimatePresence mode="wait">
+      {!student ? (
+        <motion.div key="auth" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.4 }}>
+          <AuthPage onAuth={handleAuth} />
+        </motion.div>
+      ) : (
+        <motion.div key="dash" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }}>
+          <Dashboard student={student} onLogout={handleLogout} />
+        </motion.div>
+      )}
+    </AnimatePresence>
+  )
 }
 
+/* ============================================================
+   AUTH PAGE — hero-style landing with 3D orb + glass form
+   ============================================================ */
 function AuthPage({ onAuth }) {
-  const [mode, setMode] = useState('signup') // 'signup' | 'login'
+  const [mode, setMode] = useState('signup')
   const [name, setName] = useState('')
   const [studentId, setStudentId] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [justRegisteredId, setJustRegisteredId] = useState('')
+  const mouseRef = useRef({ x: 0, y: 0 })
+
+  const handleMouse = (e) => {
+    const { innerWidth: w, innerHeight: h } = window
+    mouseRef.current = { x: (e.clientX - w / 2) / w * 2, y: (e.clientY - h / 2) / h * 2 }
+  }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -67,93 +98,280 @@ function AuthPage({ onAuth }) {
     }
   }
 
-  const switchMode = (m) => {
-    setMode(m)
-    setError('')
-    setPassword('')
-  }
+  const switchMode = (m) => { setMode(m); setError(''); setPassword('') }
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div className="card fade-in" style={{ width: 380, padding: 32 }}>
-        <div style={{ textAlign: 'center', marginBottom: 28 }}>
-          <div style={{
-            width: 48, height: 48, borderRadius: 12,
-            background: 'var(--accent-soft)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            margin: '0 auto 16px',
-          }}>
-            <svg width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="var(--accent)" strokeWidth={1.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M4.26 10.147a60.438 60.438 0 0 0-.491 6.347A48.62 48.62 0 0 1 12 20.904a48.62 48.62 0 0 1 8.232-4.41 60.46 60.46 0 0 0-.491-6.347m-15.482 0a50.636 50.636 0 0 0-2.658-.813A59.906 59.906 0 0 1 12 3.493a59.903 59.903 0 0 1 10.399 5.84c-.896.248-1.783.52-2.658.814m-15.482 0A50.717 50.717 0 0 1 12 13.489a50.702 50.702 0 0 1 7.74-3.342M6.75 15a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Zm0 0v-3.675A55.378 55.378 0 0 1 12 8.443m-7.007 11.55A5.981 5.981 0 0 0 6.75 15.75v-1.5" />
-            </svg>
+    <div onMouseMove={handleMouse} style={{ position: 'relative', minHeight: '100vh', overflow: 'hidden' }}>
+      <div className="aurora" />
+      <ParticleField />
+
+      <div style={{
+        position: 'relative', zIndex: 2, minHeight: '100vh',
+        display: 'grid', gridTemplateColumns: 'minmax(0, 1.1fr) minmax(0, 0.9fr)',
+        maxWidth: 1380, margin: '0 auto', padding: '48px 40px',
+        alignItems: 'center', gap: 48,
+      }} className="auth-grid">
+
+        {/* LEFT — hero */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 28 }}>
+          <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6 }}>
+            <Logo size={38} />
+          </motion.div>
+
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.8, delay: 0.1 }}
+            style={{ position: 'relative' }}
+          >
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '6px 14px', borderRadius: 999, background: 'var(--violet-soft)', border: '1px solid var(--border-strong)', fontSize: 12, fontWeight: 600, color: 'var(--violet-bright)', marginBottom: 20 }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--emerald-bright)', boxShadow: '0 0 10px var(--emerald-bright)' }} />
+              Academic integrity, reimagined
+            </div>
+
+            <h1 style={{
+              fontSize: 'clamp(40px, 5vw, 64px)',
+              lineHeight: 1.05,
+              fontWeight: 800,
+              letterSpacing: '-0.04em',
+              color: 'var(--text-bright)',
+              marginBottom: 20,
+            }}>
+              Prove your work.<br/>
+              <span className="gradient-text">Not your prompts.</span>
+            </h1>
+
+            <p style={{ fontSize: 17, color: 'var(--text-muted)', maxWidth: 520, lineHeight: 1.6 }}>
+              Submit assignments, get instant AI-detection feedback, and verify your own understanding
+              through interactive comprehension checks. Built for the AI era.
+            </p>
+          </motion.div>
+
+          {/* feature row */}
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.8, delay: 0.25 }}
+            style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14, maxWidth: 560, marginTop: 12 }}
+          >
+            <Feature
+              icon="🛡"
+              title="8-layer detection"
+              color="linear-gradient(135deg,#a855f7,#ec4899)"
+            />
+            <Feature
+              icon="⚡"
+              title="Instant MCQ quiz"
+              color="linear-gradient(135deg,#22d3ee,#06b6d4)"
+            />
+            <Feature
+              icon="✍"
+              title="Style profiling"
+              color="linear-gradient(135deg,#fbbf24,#f472b6)"
+            />
+          </motion.div>
+
+          {/* 3D shield behind/below hero */}
+          <div style={{ position: 'absolute', right: -100, top: 40, width: 520, height: 520, pointerEvents: 'none', zIndex: -1, display: 'none' }}>
+            <ShieldOrb height={520} mouseRef={mouseRef} />
           </div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-bright)', marginBottom: 4 }}>
-            AI Guard
-          </h1>
-          <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>Student Portal</p>
         </div>
 
-        <div style={{ display: 'flex', gap: 4, marginBottom: 20, padding: 4, background: 'var(--bg-elevated)', borderRadius: 8 }}>
-          <button
-            type="button"
-            onClick={() => switchMode('signup')}
+        {/* RIGHT — auth card + orb */}
+        <div style={{ position: 'relative' }}>
+          {/* 3D orb floats above the card on larger screens */}
+          <div style={{ position: 'absolute', top: -120, left: '50%', transform: 'translateX(-50%)', width: 360, height: 260, pointerEvents: 'none', zIndex: 0 }}>
+            <ShieldOrb height={260} mouseRef={mouseRef} />
+          </div>
+
+          <motion.div
+            initial={{ opacity: 0, y: 30, scale: 0.96 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            transition={{ duration: 0.7, delay: 0.15, ease: [0.22, 1, 0.36, 1] }}
+            className="card card-glow"
             style={{
-              flex: 1, padding: '8px 12px', borderRadius: 6, border: 'none', cursor: 'pointer',
-              background: mode === 'signup' ? 'var(--accent)' : 'transparent',
-              color: mode === 'signup' ? '#fff' : 'var(--text-muted)',
-              fontSize: 13, fontWeight: 600,
+              width: '100%',
+              maxWidth: 440,
+              marginLeft: 'auto',
+              marginTop: 140,
+              padding: 36,
+              borderRadius: 22,
+              border: '1px solid var(--border-strong)',
+              background: 'linear-gradient(135deg, rgba(22,15,43,0.85), rgba(10,6,24,0.92))',
+              position: 'relative',
+              zIndex: 1,
             }}
-          >Sign Up</button>
-          <button
-            type="button"
-            onClick={() => switchMode('login')}
-            style={{
-              flex: 1, padding: '8px 12px', borderRadius: 6, border: 'none', cursor: 'pointer',
-              background: mode === 'login' ? 'var(--accent)' : 'transparent',
-              color: mode === 'login' ? '#fff' : 'var(--text-muted)',
-              fontSize: 13, fontWeight: 600,
-            }}
-          >Log In</button>
+          >
+            {/* border-glow ring */}
+            <div aria-hidden style={{
+              position: 'absolute', inset: -1, borderRadius: 23,
+              background: 'conic-gradient(from 180deg at 50% 50%, rgba(139,92,246,0.45), rgba(34,211,238,0.3), rgba(236,72,153,0.4), rgba(139,92,246,0.45))',
+              filter: 'blur(16px)',
+              opacity: 0.45,
+              zIndex: -1,
+            }} />
+
+            <div style={{ textAlign: 'center', marginBottom: 24 }}>
+              <h2 style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-bright)', marginBottom: 4 }}>
+                {mode === 'signup' ? 'Get started' : 'Welcome back'}
+              </h2>
+              <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>
+                {mode === 'signup' ? 'Create your student account — takes 10 seconds' : 'Sign in to continue where you left off'}
+              </p>
+            </div>
+
+            {/* Mode tabs */}
+            <div style={{ position: 'relative', display: 'flex', gap: 0, padding: 4, background: 'rgba(10, 6, 24, 0.6)', borderRadius: 12, marginBottom: 22, border: '1px solid var(--border)' }}>
+              <motion.div
+                initial={false}
+                animate={{ x: mode === 'signup' ? 0 : '100%' }}
+                transition={{ type: 'spring', stiffness: 380, damping: 32 }}
+                style={{
+                  position: 'absolute',
+                  top: 4, bottom: 4,
+                  width: 'calc(50% - 4px)',
+                  left: 4,
+                  borderRadius: 8,
+                  background: 'var(--grad-primary)',
+                  boxShadow: '0 4px 16px rgba(139, 92, 246, 0.4)',
+                }}
+              />
+              {['signup', 'login'].map(m => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => switchMode(m)}
+                  style={{
+                    flex: 1, padding: '10px 12px', position: 'relative', zIndex: 1,
+                    fontSize: 13, fontWeight: 700, letterSpacing: '0.02em',
+                    color: mode === m ? '#fff' : 'var(--text-muted)',
+                    transition: 'color 200ms',
+                  }}
+                >
+                  {m === 'signup' ? 'Sign Up' : 'Log In'}
+                </button>
+              ))}
+            </div>
+
+            <form onSubmit={handleSubmit}>
+              <AnimatePresence mode="wait">
+                <motion.div
+                  key={mode}
+                  initial={{ opacity: 0, x: mode === 'signup' ? -20 : 20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: mode === 'signup' ? 20 : -20 }}
+                  transition={{ duration: 0.25 }}
+                >
+                  {mode === 'signup' ? (
+                    <div style={{ marginBottom: 14 }}>
+                      <div className="label">Full Name</div>
+                      <input value={name} onChange={e => setName(e.target.value)} placeholder="Alex Morgan" autoFocus />
+                    </div>
+                  ) : (
+                    <div style={{ marginBottom: 14 }}>
+                      <div className="label">Student ID</div>
+                      <input value={studentId} onChange={e => setStudentId(e.target.value)} placeholder="a1b2c3d4" autoFocus />
+                    </div>
+                  )}
+
+                  <div style={{ marginBottom: 18 }}>
+                    <div className="label">Password</div>
+                    <input type="password" value={password} onChange={e => setPassword(e.target.value)}
+                      placeholder={mode === 'signup' ? 'Choose a strong password' : 'Your password'} />
+                  </div>
+                </motion.div>
+              </AnimatePresence>
+
+              {error && (
+                <motion.div
+                  initial={{ opacity: 0, y: -6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  style={{
+                    color: 'var(--rose-bright)', fontSize: 13, marginBottom: 12,
+                    padding: '8px 12px', borderRadius: 8,
+                    background: 'var(--rose-soft)', border: '1px solid rgba(244,63,94,0.3)',
+                  }}
+                >
+                  {error}
+                </motion.div>
+              )}
+
+              <MagneticButton className="btn btn-primary" disabled={loading} style={{ width: '100%', padding: '14px 22px', fontSize: 14 }}>
+                {loading ? (
+                  <>
+                    <div className="spinner" style={{ width: 16, height: 16 }} />
+                    {mode === 'signup' ? 'Creating account…' : 'Signing in…'}
+                  </>
+                ) : (
+                  <>
+                    {mode === 'signup' ? 'Create account' : 'Log in'}
+                    <span style={{ fontSize: 16, lineHeight: 0 }}>→</span>
+                  </>
+                )}
+              </MagneticButton>
+            </form>
+
+            {justRegisteredId && mode === 'signup' && (
+              <motion.div
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                style={{
+                  marginTop: 16,
+                  padding: 14,
+                  borderRadius: 12,
+                  background: 'linear-gradient(135deg, rgba(16,185,129,0.14), rgba(34,211,238,0.1))',
+                  border: '1px solid rgba(16, 185, 129, 0.3)',
+                  fontSize: 12.5,
+                  color: 'var(--text)',
+                }}
+              >
+                <div style={{ fontWeight: 700, color: 'var(--emerald-bright)', marginBottom: 4 }}>✓ Account created</div>
+                Your Student ID: <code style={{ background: 'rgba(0,0,0,0.3)', padding: '2px 8px', borderRadius: 6, fontFamily: "'JetBrains Mono', monospace", color: 'var(--text-bright)' }}>{justRegisteredId}</code>
+                <div style={{ marginTop: 4, color: 'var(--text-dim)' }}>Save this — you'll need it to log in next time.</div>
+              </motion.div>
+            )}
+
+            <div style={{ textAlign: 'center', marginTop: 18, color: 'var(--text-dim)', fontSize: 12 }}>
+              {mode === 'signup' ? 'Already have an account? ' : 'New to AI Guard? '}
+              <button type="button" onClick={() => switchMode(mode === 'signup' ? 'login' : 'signup')}
+                style={{ color: 'var(--cyan-bright)', fontWeight: 600, textDecoration: 'underline', padding: 0 }}>
+                {mode === 'signup' ? 'Log in' : 'Create one'}
+              </button>
+            </div>
+          </motion.div>
         </div>
-
-        <form onSubmit={handleSubmit}>
-          {mode === 'signup' ? (
-            <div style={{ marginBottom: 16 }}>
-              <div className="label">Your Name</div>
-              <input value={name} onChange={e => setName(e.target.value)} placeholder="Enter your full name" autoFocus />
-            </div>
-          ) : (
-            <div style={{ marginBottom: 16 }}>
-              <div className="label">Student ID</div>
-              <input value={studentId} onChange={e => setStudentId(e.target.value)} placeholder="e.g. a1b2c3d4" autoFocus />
-            </div>
-          )}
-
-          <div style={{ marginBottom: 16 }}>
-            <div className="label">Password</div>
-            <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder={mode === 'signup' ? 'Choose a password' : 'Enter your password'} />
-          </div>
-
-          {error && <div style={{ color: 'var(--red)', fontSize: 13, marginBottom: 12 }}>{error}</div>}
-
-          <button className="btn btn-primary" style={{ width: '100%' }} disabled={loading}>
-            {loading
-              ? <><div className="spinner" style={{ width: 14, height: 14 }} /> {mode === 'signup' ? 'Signing up...' : 'Logging in...'}</>
-              : (mode === 'signup' ? 'Sign Up' : 'Log In')}
-          </button>
-        </form>
-
-        {justRegisteredId && mode === 'signup' && (
-          <div style={{ marginTop: 16, padding: 12, background: 'var(--accent-soft)', borderRadius: 8, fontSize: 12, color: 'var(--text-bright)' }}>
-            Your Student ID: <strong>{justRegisteredId}</strong><br />
-            Save this — you'll need it to log in next time.
-          </div>
-        )}
-
-        <p style={{ color: 'var(--text-dim)', fontSize: 12, textAlign: 'center', marginTop: 16 }}>
-          {mode === 'signup' ? 'Sign up to join classes and submit assignments' : 'Log in to access your submissions'}
-        </p>
       </div>
+
+      <style>{`
+        @media (max-width: 880px) {
+          .auth-grid { grid-template-columns: 1fr !important; padding: 32px 20px !important; }
+        }
+      `}</style>
     </div>
+  )
+}
+
+function Feature({ icon, title, color }) {
+  return (
+    <motion.div
+      whileHover={{ y: -3, scale: 1.03 }}
+      transition={{ type: 'spring', stiffness: 400, damping: 20 }}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 10,
+        padding: '12px 14px',
+        background: 'var(--bg-card)',
+        backdropFilter: 'blur(20px)',
+        border: '1px solid var(--border)',
+        borderRadius: 14,
+      }}
+    >
+      <div style={{
+        width: 32, height: 32, borderRadius: 10,
+        background: color,
+        display: 'grid', placeItems: 'center',
+        fontSize: 16,
+      }}>{icon}</div>
+      <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-bright)' }}>{title}</span>
+    </motion.div>
   )
 }
