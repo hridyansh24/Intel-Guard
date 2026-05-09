@@ -50,72 +50,75 @@ frontend/                        # (Legacy) Original combined SPA — kept for r
 backend/
 ├── main.py              # FastAPI app entrypoint (lifespan handler creates tables on startup)
 ├── config.py            # Settings from .env (DATABASE_URL for PostgreSQL)
-├── database.py          # Async SQLAlchemy engine, session factory, Base, get_db dependency
-├── models.py            # All SQLAlchemy ORM models (Student, Class, Context, Submission, StyleProfile, caches)
+├── database.py          # Async SQLAlchemy engine, session factory, Base, get_db dependency, _LIGHT_MIGRATIONS for column adds
+├── models.py            # All SQLAlchemy ORM models (Student, Professor, Class, ClassContext, Context, Submission, StyleProfile, caches)
 ├── schemas.py           # All Pydantic request/response models
 ├── prompts.py           # All LLM system prompts (shared across routers)
 ├── routers/
 │   ├── context.py       # Upload assignment specs (the "context")
-│   ├── analyze.py       # AI detection with 7-layer heuristic prompt
-│   ├── quiz.py          # Generate + evaluate comprehension questions (evaluate uses mini model)
+│   ├── analyze.py       # AI detection with 8-layer heuristic prompt
+│   ├── quiz.py          # Generate + evaluate MCQ comprehension questions
 │   ├── summary.py       # Comprehension-focused submission walkthrough
-│   ├── submit.py        # Combined endpoint — orchestrates detect → style → quiz/summary + saves submission record
+│   ├── submit.py        # Combined endpoint — reads per-assignment mode + num_questions from ClassContext, orchestrates detect → style → quiz/summary, persists full result, returns student response with AI signals stripped
 │   ├── style.py         # Writing style fingerprinting — update profiles, compare, get profiles
-│   ├── students.py      # Student registration (name → unique ID)
-│   ├── classes.py       # Class CRUD, join, link assignments, view roster/submissions
+│   ├── students.py      # Student registration / login (name + password → unique ID)
+│   ├── professors.py    # Professor registration / login (demo auth) — same PBKDF2 scheme as students, full UUID id
+│   ├── classes.py       # Class CRUD, join, link assignments (with mode + num_questions + skip_detection), view roster/submissions
 │   └── submissions.py   # Submission history — list, get, update quiz results
 └── services/
-    ├── llm.py           # LLM abstraction — async, dual models, JSON retry, client caching
-    ├── extractor.py     # PDF, code, and text file extraction (with DB-backed caching)
-    ├── context_store.py # Context CRUD via PostgreSQL
+    ├── llm.py             # LLM abstraction — async, dual models, JSON retry, client caching
+    ├── extractor.py       # PDF, code, and text file extraction (with DB-backed caching)
+    ├── context_store.py   # Context CRUD via PostgreSQL
     ├── student_store.py   # Student registration via PostgreSQL
-    ├── class_store.py     # Class management via PostgreSQL (with selectinload for relationships)
+    ├── professor_store.py # Professor registration / login via PostgreSQL (full UUID ids)
+    ├── class_store.py     # Class management via PostgreSQL (with selectinload for relationships); per-assignment mode + num_questions normalization
     ├── submission_store.py # Submission records via PostgreSQL (JSONB for results)
     ├── submission_cache.py # Caches extracted text by content hash (PostgreSQL)
     ├── result_cache.py    # Caches LLM responses + quiz pools (PostgreSQL, JSONB)
     ├── style_analyzer.py  # Quantitative style metrics (~80 features) for prose + code
-    └── style_store.py     # Per-student profile storage, Welford's algorithm, deviation scoring (PostgreSQL, JSONB)
+    └── style_store.py     # Per-student profile storage, Welford's algorithm, deviation scoring with COSINE_STD constant + smooth quant/qual blend + coverage gating
 ```
 
 ## Key concepts
 - **Context** = assignment specification. Uploaded first, referenced by `context_id` in all subsequent calls. Every LLM call gets the assignment spec injected into the system prompt so questions/analysis are grounded in what was actually assigned.
-- **Analyze** = AI detection. Uses an 8-layer prompt: content-level, word-level, grammar, formatting, communication artifacts, "soulless but clean" test, code-specific signals, and **Layer 8: writing style comparison** (when student profile is available, the LLM compares submission against the student's known writing patterns).
-- **Quiz** = comprehension verification via MCQ. Questions are 4-option multiple-choice with pre-generated explanations per option. Grading is deterministic (no LLM call) — backend matches chosen_index against stored correct_index. Anti-hallucination rules enforce that all options are grounded in literal submission/spec text.
+- **Analyze** = AI detection. Uses an 8-layer prompt: content-level, word-level, grammar, formatting, communication artifacts, "soulless but clean" test, code-specific signals, and **Layer 8: writing style comparison** (when student profile is available, the LLM compares submission against the student's known writing patterns). Code submissions use a separate forensic-code-authorship prompt.
+- **Quiz** = comprehension verification via MCQ. Questions are 4-option multiple-choice with pre-generated explanations per option. Grading is deterministic (no LLM call). The current prompt demands a ~40/40/20 mix of conceptual / applied / transfer questions and emits `category` + `concept_tag` per question. Anti-hallucination rules enforce all options are grounded in submission/spec text.
 - **Summary** = comprehension walkthrough. Student-friendly, structured so they can't just scroll past.
 - **Style** = writing style fingerprinting. Hybrid quantitative (~80 metrics) + qualitative (LLM-rated) analysis. Per-student profiles updated incrementally via Welford's online algorithm. Computes deviation score on new submissions. Generates a `style_summary` (natural language description) stored in DB and injected into AI detection prompts for personalized analysis.
-- **Confidence Score** = combined heuristic score. Formula: `raw = W_AI(0.50) × ai_prob + W_STYLE(0.35) × style_dev + W_TIME(0.15) × time_anomaly`, then `confidence = raw × (1 - quiz_score × 0.65)`. Thresholds: <0.25 low, 0.25-0.45 moderate, 0.45-0.65 elevated (quiz), 0.65+ high (quiz + flag).
-- **Student** = registered user with a unique ID (UUID-8). Signs up with just a name (testing mode). Stored in `students` table.
-- **Class** = a group of students linked to assignments. Professor creates classes, students join. Stored in `classes` table with `class_students` association table and `class_contexts` table (includes per-assignment `skip_detection` flag).
-- **Submission Record** = persisted record of a student's submission with AI detection, style analysis, confidence score, and quiz results. Stored in `submissions` table (JSONB columns for complex results). Created automatically when student submits via `/submit/` with both `student_id` and `class_id`.
+- **Confidence Score** = combined heuristic score. Components: `ai_detection` (W=0.50), `style_deviation` (W=0.35, always included with `insufficient_history` flag when n<3), `time_anomaly` (W=0.15, planned). Formula: `raw = Σ(W_i × value_i) / Σ(W_i_active)`; `confidence = raw × (1 - quiz_score × 0.65)`. Thresholds: <0.25 low, 0.25-0.45 moderate, 0.45-0.65 elevated, 0.65+ high. Note: thresholds are **only used by the professor view**; the student no longer sees the score and the quiz always runs (the professor configures whether per-assignment).
+- **Student** = registered user with a unique 8-hex-char ID. Signs up with name + password (PBKDF2-SHA256, 100k iterations). Stored in `students` table.
+- **Professor** = registered user with a full UUID id. Signs up with name + password (same PBKDF2 scheme as students). Stored in `professors` table. Demo-grade auth — frontend gating only, no per-route enforcement yet.
+- **Class** = a group of students linked to assignments. Professor creates classes, students join. Stored in `classes` table with `class_students` association table and `class_contexts` link table that carries the **per-assignment verification config** the professor sets: `mode` (`quiz` | `summary` | `both`), `num_questions` (1-20, default 10), and `skip_detection` (bool).
+- **Submission Record** = persisted record of a student's submission with AI detection, style analysis, confidence score, and quiz results. Stored in `submissions` table (JSONB columns for complex results). Created automatically when student submits via `/submit/` with both `student_id` and `class_id`. The persisted row keeps the full AI / style / confidence signals; the response returned to the student strips them so only the professor view sees them.
 
 ## Cost optimizations
-- **Dual-model routing:** Primary model (Sonnet 4.5) for detection, quiz generation, summary. Mini model (Haiku 4.5) for style fingerprinting qualitative analysis. Quiz evaluation is now deterministic (MCQ) — no LLM call needed.
+- **Dual-model routing:** Primary model (Sonnet 4.5) for detection, quiz generation, summary. Mini model (Haiku 4.5) for style fingerprinting qualitative analysis. Quiz evaluation is deterministic (MCQ) — no LLM call needed.
 - **Submission caching:** Extracted text is cached by SHA-256 hash. Re-uploading the same file (retries) skips extraction entirely.
-- **Optional AI detection:** `POST /submit/` accepts `skip_detection=True` for quiz-everyone mode. Saves one full primary-model call per submission (~20% cost reduction).
+- **Optional AI detection:** `class_contexts.skip_detection` saves one full primary-model call per submission (~20% cost reduction). Set per-assignment by the professor; the quiz still runs.
 - **LLM result caching (`result_cache.py`):** Caches LLM responses in PostgreSQL keyed by `hash(context_id + submission_text + operation)`. Analyze, quiz, and summary results are all cached — same submission against the same assignment never triggers a repeat LLM call. Cache is shared across endpoints (e.g., `/analyze/` and `/submit/` hit the same cache key for detection).
 - **MCQ quiz with deterministic grading:** Quiz evaluation no longer calls the LLM. Questions are pre-generated as 4-option MCQs with `correct_index` and per-option `explanations` stored server-side. Client receives only `{question, options, question_number}` (answers stripped). On evaluate, backend matches `chosen_index` against stored answer — zero cost per quiz attempt.
-- **Quiz question pool with exhaustion refresh:** First call generates `num_questions * 4` (e.g., 12 for a 3-question quiz) MCQs and caches the pool. Each retry serves unseen questions only — tracked via `served_indices`. When all exhausted, pool is deleted and regenerated. If pool has fewer than requested questions, serves what's available instead of failing.
+- **Quiz question pool with exhaustion refresh:** First call generates `num_questions * POOL_MULTIPLIER` MCQs (currently 2x, so 20 questions for a 10-question quiz) and caches the pool. Each retry serves unseen questions only — tracked via `served_indices`. When all exhausted, pool is deleted and regenerated. If pool has fewer than requested questions, serves what's available instead of failing. The 2x multiplier was lowered from 4x once the default question count moved to 10 to keep generation cost linear.
 
 ### Cost metrics summary
 | Optimization | What it saves | When it kicks in |
 |---|---|---|
-| Dual-model routing | ~60-80% per evaluation call (mini vs primary) | Every quiz answer evaluation |
-| `skip_detection=True` | 1 full primary-model call (~20% of a `/submit/` flow) | When instructor opts out of AI detection |
+| Dual-model routing | ~60-80% per qualitative-style call (mini vs primary) | Every style fingerprint qualitative call |
+| `skip_detection=true` on a class_context | 1 full primary-model call (~20% of a `/submit/` flow) | When the professor opts the assignment out of AI detection |
 | Submission text caching | PDF/file parsing time (not LLM cost) | Same file re-uploaded (retries) |
 | Result cache — analyze | 1 primary-model call per duplicate analysis | Same file + same assignment re-analyzed |
 | Result cache — summary | 1 primary-model call per duplicate summary | Same file + same assignment re-summarized |
-| Quiz pool (4x generation) | 1 primary-model call per quiz retry | Student fails quiz and retries (2nd–4th attempt = free, 5th generates fresh pool) |
+| Quiz pool (2x generation) | 1 primary-model call per quiz retry | Student retries quiz — 2nd attempt free until pool exhausted, then a fresh 2x pool is generated |
 
 ### Worst-case vs optimized: token cost per submission
-Assuming a `/submit/` call with detection + quiz (3 questions) + summary, ~2000 input tokens:
+Assuming a `/submit/` call with detection + quiz (default 10 questions, professor-set) + no summary, ~2000 input tokens:
 
 | Scenario | Without caching | With caching |
 |---|---|---|
-| First submission | 3 primary calls (~6,600 tokens) | 3 primary calls (~7,050 tokens — quiz pool 4x overhead) |
-| Same student retries quiz (attempts 2–4) | +2,150 tokens per retry | **0 tokens** (unseen questions from pool) |
-| Same student retries quiz (attempt 5+) | +2,150 tokens | ~7,050 tokens (fresh pool generated, then free again for next 3 retries) |
-| Same student retries everything | +6,600 tokens | **0 tokens** (all cached — analyze + summary never regenerate) |
-| Different student, same file + assignment | +6,600 tokens | **0 tokens** (shared cache) |
+| First submission | 2 primary calls (~6,400 tokens — detection + 20-question pool gen) | 2 primary calls (~6,400 tokens) |
+| Same student retries quiz (attempt 2) | +3,200 tokens | **0 tokens** (10 unseen questions from the pool) |
+| Same student retries quiz (attempt 3+) | +3,200 tokens | ~3,200 tokens (fresh 2x pool, then free again for the next attempt) |
+| Same student re-submits identical text | +6,400 tokens | **0 tokens** (analyze + pool both cached) |
+| Different student, same file + assignment | +6,400 tokens | **0 tokens** (shared cache by content hash + context_id) |
 
 ## Conventions
 - LLM calls always go through `services/llm.py` — never call provider SDKs directly from routers
@@ -138,11 +141,11 @@ Assuming a `/submit/` call with detection + quiz (3 questions) + summary, ~2000 
 | POST | `/context/` | Upload 1-10 assignment spec files (PDF/code/text) → returns `context_id` |
 | GET | `/context/` | List all stored contexts |
 | GET | `/context/{id}` | Get a specific context |
-| POST | `/analyze/` | Upload 1-10 submission files + `context_id` → AI detection (7-layer) |
-| POST | `/quiz/generate` | Submission text + `context_id` → comprehension questions |
+| POST | `/analyze/` | Upload 1-10 submission files + `context_id` → AI detection (8-layer prose, forensic-code variant) |
+| POST | `/quiz/generate` | Submission text + `context_id` → MCQ comprehension questions |
 | POST | `/quiz/evaluate` | MCQ answer (chosen_index + question text) → deterministic pass/fail + explanation (no LLM call) |
 | POST | `/summary/` | Submission text + `context_id` → comprehension walkthrough |
-| POST | `/submit/` | Combined endpoint: 1-10 files, detect → style → quiz/summary. Optional `student_id` + `class_id` for tracking. |
+| POST | `/submit/` | Combined endpoint: 1-10 files. **Reads `mode` and `num_questions` from the per-class assignment link** (no longer accepts them as form fields). Optional `student_id` + `class_id` for tracking. Persists full ai/style/confidence on the submissions row but returns those fields as `null` to the student. |
 | POST | `/style/update` | Upload submission files + `student_id` + `context_id` → update student's style profile |
 | GET | `/style/profiles` | List all student style profiles |
 | GET | `/style/{student_id}` | Get a student's full style profile |
@@ -151,19 +154,37 @@ Assuming a `/submit/` call with detection + quiz (3 questions) + summary, ~2000 
 | POST | `/students/login` | Login student (student_id + password) → returns student info |
 | GET | `/students/` | List all students |
 | GET | `/students/{id}` | Get a student |
+| POST | `/professors/register` | Register professor (name + password) → returns `professor_id` (full UUID) |
+| POST | `/professors/login` | Login professor (professor_id + password) → returns professor info |
+| GET | `/professors/` | List all professors |
+| GET | `/professors/{id}` | Get a professor |
 | POST | `/classes/` | Create a class (name) → returns `class_id` |
 | GET | `/classes/` | List all classes |
-| GET | `/classes/{id}` | Get a class (with students[] and contexts[]) |
+| GET | `/classes/{id}` | Get a class (with students[] and contexts[] — each context entry carries `mode`, `num_questions`, `skip_detection`) |
 | POST | `/classes/{id}/join` | Student joins a class |
-| POST | `/classes/{id}/context` | Link an assignment to a class |
+| POST | `/classes/{id}/context` | Link an assignment to a class. Body: `{context_id, mode, num_questions, skip_detection}`. `mode`/`num_questions` default to `"quiz"` / `10` |
+| PATCH | `/classes/{id}/context/{context_id}` | Update `mode`, `num_questions`, and/or `skip_detection` for a linked assignment (each field optional) |
+| GET | `/classes/{id}/context/{context_id}/settings` | Read the per-assignment verification settings |
 | GET | `/classes/{id}/students` | Get students in a class |
-| GET | `/classes/{id}/submissions` | Get submissions for a class (optional `?context_id=` filter) |
+| GET | `/classes/{id}/submissions` | Get submissions for a class (optional `?context_id=` filter). Includes full ai/style/confidence — professor view |
 | GET | `/classes/student/{id}` | Get classes a student belongs to |
 | GET | `/submissions/` | List submissions (filterable by `class_id`, `student_id`, `context_id`) |
-| GET | `/submissions/{id}` | Get a specific submission record |
+| GET | `/submissions/{id}` | Get a specific submission record (full signals — professor view) |
 | PATCH | `/submissions/{id}/quiz` | Update quiz results on a submission |
 
 ## Current status
+- **Quiz-everyone with professor-set verification + demo professor auth + math fixes** (2026-05-09):
+  - `class_contexts` gained `mode` (`quiz` | `summary` | `both`, default `quiz`) and `num_questions` (1-20, default 10) columns. Light migration in `database.init_db` runs `ALTER TABLE class_contexts ADD COLUMN IF NOT EXISTS ...` so existing rows pick up the new columns on next backend start.
+  - `/submit/` no longer accepts `mode` or `num_questions` as form fields — it reads them from the per-class link the professor configured. Quiz pool multiplier dropped from 4x to 2x.
+  - Student response from `/submit/` now strips `ai_detection`, `style_analysis`, and `confidence_score` (set to `null`). The persisted `submissions` row keeps the full signals; the professor view (`/classes/{id}/submissions`, `/submissions/{id}`) reads them unchanged.
+  - New `Professor` ORM model (full UUID id), `professor_store` with PBKDF2-SHA256 hashing, and `/professors/register|login|{id}` router. Frontend-professor wraps the existing classes UI in a `ProfessorAuthPage` (sign-up / log-in tabs, localStorage session, sign-out in nav). Demo-grade — no per-route gating.
+  - `QUIZ_GENERATION_PROMPT` rewritten to demand a ~40/40/20 conceptual / applied / transfer mix, ban literal-string recall, and emit `category` + `concept_tag` per question. Backward-compatible with existing schemas.
+  - Style/confidence math made auditable:
+    - `services/style_store.py:COSINE_STD = 0.05` replaces the undocumented `dist * 20` cosine→z mapping.
+    - `_quant_share(n)` continuous schedule (`0.7 - 0.4·exp(-(n-3)/4)`) replaces the step-function quant/qual blend at n=5/8.
+    - `compute_deviation` now reports `coverage`, `covered_metric_count`, `quant_share`, and `qual_covered`. When weighted-metric coverage falls below `COVERAGE_FLOOR = 0.5`, the quantitative deviation is scaled down so a sparse profile doesn't fabricate confidence.
+    - `compute_confidence_score` always includes the style component (with `insufficient_history: true` flag when no history yet) so the weighted denominator stays stable instead of silently inflating the AI weight.
+  - Frontend-professor `ClassDashboard.AssignmentRow` exposes a per-row Edit panel for `mode` + `num_questions` + `skip_detection`. Frontend-student drops the verification-mode picker and `DetectionCard / ConfidenceCard / StyleCard` in favour of a `ReceivedStep` landing.
 - **Renamed from Intel Guard → AI Guard** (2026-04-05) — placeholder name, final name TBD
 - Backend is functional and tested — analyze, submit, quiz generate all confirmed working
 - Using Anthropic Claude API: `claude-sonnet-4-5` (primary) and `claude-haiku-4-5` (mini) with prompt caching enabled
@@ -194,23 +215,24 @@ Assuming a `/submit/` call with detection + quiz (3 questions) + summary, ~2000 
   - Per-student profiles in `style_profiles` table (JSONB) with Welford's online algorithm (incremental O(1) updates)
   - Deviation scoring: z-scores on scalars, cosine distance on vectors, weighted by discriminating power
   - Needs 3+ submissions per student before comparisons are meaningful; minimum 300 words per submission
-- **Confidence score formula** (implemented 2026-04-06):
-  - `raw = W_AI(0.50) × ai_prob + W_STYLE(0.35) × style_dev + W_TIME(0.15) × time_anomaly`
-  - `confidence = raw × (1 - quiz_score × 0.65)` — acing quiz reduces score by up to 65%
-  - Thresholds: <0.25 low, 0.25-0.45 moderate, 0.45-0.65 elevated (quiz), 0.65+ high (quiz + flag)
-  - `/submit/` now accepts optional `student_id` — auto-runs style analysis and returns confidence score
+- **Confidence score formula** (implemented 2026-04-06, refined 2026-05-09):
+  - Components: `ai_detection` (W=0.50), `style_deviation` (W=0.35), `time_anomaly` (W=0.15, planned).
+  - `raw = Σ(W_i × value_i) / Σ(W_i_active)` — denominator counts the components actually contributed; `style_deviation` is now **always included** (default 0, with `insufficient_history: true` flag) so the AI weight does not silently inflate when no profile exists.
+  - `confidence = raw × (1 - quiz_score × 0.65)` — acing quiz reduces score by up to 65%.
+  - Thresholds: <0.25 low, 0.25-0.45 moderate, 0.45-0.65 elevated, 0.65+ high. **Note:** the student no longer sees the score — thresholds drive only the professor dashboard's badge colors. The quiz / summary that runs is whatever the professor configured on the class_context, regardless of confidence.
+  - `/submit/` runs style analysis automatically when `student_id` is provided.
 - **Planned behavioral heuristics** (not yet implemented):
   - **Time-based analysis:** Extension tracks assignment open → submit timestamps; professor sets estimated completion time; flags submissions significantly outside expected range
   - **Quiz-time behavioral monitoring:** Tight time limit on quiz, paste detection on answer fields, tab-switch/focus-loss logging — all feed into confidence score rather than blocking
   - Actively researching more heuristics
-- **PostgreSQL migration** (completed 2026-04-08):
+- **PostgreSQL migration** (completed 2026-04-08, schema extended 2026-05-09):
   - Migrated all storage from JSON files on disk to PostgreSQL via async SQLAlchemy + asyncpg
-  - Tables: students, classes, class_students, class_contexts, contexts, submissions, style_profiles, submission_caches, result_caches, quiz_pools
+  - Tables: students, professors, classes, class_students, class_contexts (now with `mode` + `num_questions`), contexts, submissions, style_profiles, submission_caches, result_caches, quiz_pools
   - JSONB columns for complex nested data (Welford stats, LLM results, quiz pools)
-  - `database.py` — engine, session factory, `get_db()` dependency, `init_db()` lifespan handler
+  - `database.py` — engine, session factory, `get_db()` dependency, `init_db()` lifespan handler that runs `create_all` plus `_LIGHT_MIGRATIONS` (idempotent `ADD COLUMN IF NOT EXISTS` statements for column adds after the initial schema)
   - `models.py` — all SQLAlchemy ORM models
   - Requires `DATABASE_URL` in `.env` (Supabase or Neon recommended for deployment)
-  - Tables auto-created on startup via `create_all`
+  - Tables auto-created on startup via `create_all`; column additions go in `_LIGHT_MIGRATIONS` so existing deployments pick them up without manual migration
 - Two-person team, `dev` branch not yet created
 
 ## Planned improvements — Ipeirotis-inspired (roadmap, not yet implemented)
@@ -247,12 +269,13 @@ Inspired by Panos Ipeirotis & Konstantinos Rizakos, "Scalable and Personalized O
 - Karpathy's llm-council pattern: https://github.com/karpathy/llm-council
 
 ## Design decisions
-- Context (assignment spec) is a first-class object — stored once, referenced by ID everywhere
-- AI detection uses heuristic prompt engineering, not a third-party detection API
-- The 8-layer detection prompt checks: content inflation, AI vocabulary, grammar tells, formatting tells, chatbot artifacts, "soulless but clean" test, code-specific signals, writing style comparison (Layer 8)
-- Code submissions use a separate forensic code-authorship prompt (`AI_DETECTION_CODE_PROMPT`) with 6 analysis dimensions and automatic escalation (3+ medium/high signals → 90%+ probability)
-- Quiz questions are grounded in the assignment spec so they test real understanding, not trivia
-- Summary mode is an alternative to quiz — instructor chooses which mode to use
+- Context (assignment spec) is a first-class object — stored once, referenced by ID everywhere.
+- AI detection uses heuristic prompt engineering, not a third-party detection API.
+- The 8-layer detection prompt checks: content inflation, AI vocabulary, grammar tells, formatting tells, chatbot artifacts, "soulless but clean" test, code-specific signals, writing style comparison (Layer 8).
+- Code submissions use a separate forensic code-authorship prompt (`AI_DETECTION_CODE_PROMPT`) with 6 analysis dimensions and automatic escalation (3+ medium/high signals → 90%+ probability).
+- Quiz questions are grounded in the assignment spec and demand a ~40/40/20 conceptual / applied / transfer mix — they verify the student understood the *concepts* the assignment was teaching, not just that they can pattern-match their own paper.
+- The professor configures verification per assignment (`mode` + `num_questions` on `class_contexts`); the student no longer chooses. Every student on a given assignment runs the same flow, regardless of AI / confidence score.
+- Student-vs-professor signal split: AI detection / style deviation / confidence are computed and persisted on every submission, but only the professor view sees them. The student response from `/submit/` strips those fields. This is a deliberate UX choice — students get a comprehension check, professors get the analytics.
 - Style-aware AI detection: when a student has a style profile, their `style_summary` is injected into the AI detection prompt so the LLM can compare the submission against the student's known writing patterns. The summary is auto-generated from accumulated qualitative data (no extra LLM call).
 
 ## Git workflow

@@ -26,15 +26,14 @@ AI Guard takes a fundamentally different approach. We don't try to catch student
 
 1. **Student installs the extension** — mandated by the university, free for students, available on Chrome, Edge, and Firefox.
 2. **Extension activates on LMS domains** — it only runs on authorized education platforms (Canvas, Blackboard, Moodle). It does nothing on other websites.
-3. **Behavioral heuristics run in the background** — the system monitors multiple signals (paste events, completion time, writing style consistency) to build a confidence score for each submission. No single signal triggers anything on its own.
-4. **If heuristics flag a submission, a comprehension check is offered** — this is not an accusation. It's a short, AI-generated quiz grounded in the assignment content. For example:
-   - Submitted a Python function? Explain what the base case of the recursion does.
-   - Submitted an essay paragraph about the Cold War? Identify the thesis and one supporting argument.
-   - Submitted a chemistry formula derivation? Solve a slight variation of the same problem.
-   - The professor can also add custom questions, which the AI evaluates based on the student's response.
-5. **Strong quiz performance reduces the flag** — if a student is flagged at, say, 20% concern weight but demonstrates clear understanding on the quiz, that weight drops (e.g., to 7%). Proving comprehension is the fastest way to clear any concern. The system rewards understanding.
+3. **Behavioral heuristics run on every submission** — the backend computes AI probability, writing-style deviation against the student's profile, and a combined confidence score. Students never see those numbers; they're for the professor's dashboard, not for accusing the student.
+4. **The comprehension check is configured per assignment, not gated on the score** — when the professor links an assignment to a class, they pick the verification mode (quiz, summary walkthrough, or both) and the number of quiz questions. Every student on that assignment gets the same flow, so it can never be experienced as an accusation. For example:
+   - Submitted a Python function? Conceptual MCQs about the base case of the recursion plus "what would happen if N changed?"
+   - Submitted an essay paragraph about the Cold War? Questions about the thesis, the role of a specific piece of evidence, and what a counter-claim would change.
+   - Submitted a chemistry formula derivation? Questions probing the underlying conservation law plus a small perturbation.
+5. **Strong quiz performance lowers the professor-side confidence score** — if the heuristics flagged a submission but the student demonstrates clear understanding on the quiz, the score drops (up to a 65% reduction from acing it). On the professor's dashboard, that translates into a low confidence pill alongside a green quiz score.
 6. **No single report determines anything** — professors see a dashboard of trends over time, not isolated incidents. A single flag is context, not a verdict. Multiple flags across assignments with poor quiz performance might warrant a conversation — but even then, the goal is to help the student engage with the material, not to punish them.
-7. **Alternative to quizzing** — if the professor prefers, students can instead read through an AI-generated explanation of their submission, reinforcing their understanding without the pressure of a quiz.
+7. **Alternative to quizzing** — when the professor sets `mode = "summary"` for an assignment, the student receives an AI-generated walkthrough of their submission instead of a quiz, reinforcing understanding without the pressure of a graded check. `mode = "both"` runs the quiz first and then offers the walkthrough.
 
 ### Key Differentiator
 
@@ -80,20 +79,21 @@ flowchart LR
 
 - **Python FastAPI backend** with async SQLAlchemy + PostgreSQL (Neon):
   - Upload assignment specs (the "context" that grounds all AI calls)
-  - AI detection using a 7-layer heuristic prompt + **Layer 8: writing style comparison** (when student profile exists, the LLM compares the submission against the student's known writing patterns)
-  - Comprehension quiz generation + answer evaluation
+  - AI detection using an 8-layer heuristic prompt — content red flags, AI vocabulary, grammar tells, formatting tells, communication artifacts, "soulless but clean" test, code-specific signals, and **Layer 8: writing style comparison** (when student profile exists, the LLM compares the submission against the student's known writing patterns). Code submissions use a separate forensic-code-authorship prompt.
+  - Conceptual MCQ quiz generation + deterministic answer evaluation. Questions are required to mix ~40% conceptual, ~40% applied (about the student's specific work), and ~20% transfer (perturbation-style) — no literal-string recall.
   - Submission summarization as an alternative to quizzing
-  - Combined `/submit` endpoint that orchestrates the full flow in one call
+  - Combined `/submit` endpoint that orchestrates detection → style → quiz/summary in one call. **Reads `mode` and `num_questions` from the per-class assignment link** the professor configured (no student-side mode picker). Persists full ai/style/confidence on the submissions row but returns those fields as `null` to the student.
   - Writing style fingerprinting with per-student profiles (~80 quantitative metrics + LLM qualitative analysis)
   - Class & student management — professors create classes, students join, assignments are linked per-class
-  - Per-assignment `skip_detection` toggle controlled by professors
-  - Full submission history with AI detection, style analysis, confidence scores, and quiz results
+  - **Per-assignment verification config** controlled by professors: `mode` (`quiz` / `summary` / `both`), `num_questions` (1-20), and `skip_detection` per `class_contexts` row.
+  - **Demo professor auth** — `Professor` model with PBKDF2 password hashing, `/professors/register|login|{id}` endpoints (frontend gating only; no per-route enforcement yet).
+  - Full submission history with AI detection, style analysis, confidence scores, and quiz results — visible to professors, hidden from students.
 - **Split frontend** — two separate React (Vite) apps:
-  - **Professor app** (port 5174) — class management, assignment creation, student roster, style profiling, submission review with badges, standalone AI analysis with optional student selection for style-aware detection
-  - **Student app** (port 5175) — signup, join classes, submit work, quiz/summary, submission history
+  - **Professor app** (port 5174) — sign-up / log-in (demo auth), class management, assignment creation with per-assignment quiz mode + question count, student roster, style profiling, submission review with AI / confidence / style pills, standalone AI analysis with optional student selection for style-aware detection
+  - **Student app** (port 5175) — signup, join classes, submit work; the dashboard now shows the professor-configured check on the upload screen and a "Submission received" landing with no AI signals (only the configured quiz / summary).
 - **LLM-agnostic** — swap between OpenAI, Anthropic, or Gemini by changing one `.env` variable
-- **Cost-optimized** — dual-model routing (primary model for detection/generation, mini model for evaluation), submission caching, result caching, quiz pool reuse, optional AI detection skip
-- **PostgreSQL storage** — all data in Neon Postgres (10 tables), JSONB for complex nested data (style profiles, LLM results)
+- **Cost-optimized** — dual-model routing (primary model for detection/generation, mini model for style-fingerprint qualitative analysis), MCQ pool reuse with 2x generation multiplier, submission caching, result caching, optional AI detection skip per assignment
+- **PostgreSQL storage** — all data in Neon Postgres (11 tables including `professors`), JSONB for complex nested data (style profiles, LLM results)
 
 ### Planned (Extension + Cloud)
 
@@ -107,15 +107,15 @@ flowchart LR
 
 ### Behavioral Heuristics
 
-AI Guard doesn't quiz every student on every submission — that would be exhausting and counterproductive. Instead, the system runs behavioral heuristics in the background and only triggers a comprehension check when the combination of signals suggests it would be valuable. Think of it as a smart filter: most submissions pass through without interruption, and the ones that get flagged receive a learning opportunity, not an accusation.
+AI Guard runs behavioral heuristics on every submission to build a **professor-side** picture of authorship and comprehension. The heuristics are not gatekeepers for the student-facing flow: the professor decides per assignment whether each student receives a quiz, a summary walkthrough, or both, and how many questions. The heuristics drive what the professor sees on the dashboard — AI probability, style deviation, confidence — and over time give them trends per student and per assignment.
 
-Each heuristic contributes a weighted confidence score. No single heuristic can trigger a quiz on its own. And if a student is flagged but demonstrates strong comprehension on the quiz, the flag weight is actively reduced — the system learns that this student understands their work, and adjusts accordingly.
+Each heuristic contributes a weighted confidence score. No single heuristic is a verdict. And if a student demonstrates strong comprehension on the configured check, the confidence score drops — the dashboard reflects that understanding rather than punishing it.
 
-#### 1. AI Detection (7-Layer Prompt Analysis)
+#### 1. AI Detection (8-Layer Prompt Analysis)
 
-The first signal. A purpose-built prompt runs the submission through seven detection layers: content-level red flags, AI-signature vocabulary, grammar/structure tells, formatting tells, chatbot communication artifacts, the "soulless but clean" test, and code-specific signals. Returns an `ai_probability` (0.0–1.0).
+The first signal. A purpose-built prompt runs the submission through eight detection layers: content-level red flags, AI-signature vocabulary, grammar/structure tells, formatting tells, chatbot communication artifacts, the "soulless but clean" test, code-specific signals, and **Layer 8: writing style comparison** against the student's accumulated profile. Returns an `ai_probability` (0.0–1.0). Code submissions use a separate forensic-code-authorship prompt with six analysis dimensions and automatic escalation when multiple medium/high signals appear.
 
-This is the existing `/analyze/` endpoint. It contributes the largest weight (50%) to the confidence score but is never a verdict on its own.
+This is the existing `/analyze/` endpoint. It contributes the largest weight (50%) to the confidence score but is never a verdict on its own. Students never see this number — only the professor does.
 
 #### 2. Time-Based Analysis (Planned — Extension Required)
 
@@ -192,7 +192,7 @@ confidence_score = raw_score × (1 - quiz_reduction)
 ```
 
 **Where:**
-- `ai_probability` = AI detection score from the 7-layer analysis (0.0–1.0)
+- `ai_probability` = AI detection score from the 8-layer analysis (0.0–1.0)
 - `style_deviation` = Writing style deviation from the student's historical profile (0.0–1.0)
 - `time_anomaly` = How far outside the expected completion time (0.0–1.0) [planned — extension required]
 - `quiz_reduction` = `quiz_score × 0.65` — acing the quiz reduces the score by up to 65%
@@ -208,14 +208,16 @@ confidence_score = raw_score × (1 - quiz_reduction)
 
 Weights are normalized by active signals — if time analysis isn't available yet, AI detection and style deviation are renormalized to fill the full weight.
 
-**Threshold classification:**
+**Threshold classification (professor view):**
 
-| Confidence Score | Level | Action |
-|-----------------|-------|--------|
-| 0.00 – 0.25 | Low | No flag, no quiz |
-| 0.25 – 0.45 | Moderate | Logged for trend tracking, no quiz |
-| 0.45 – 0.65 | Elevated | Quiz triggered |
-| 0.65 – 1.00 | High | Quiz triggered, flagged for review |
+| Confidence Score | Level | Professor dashboard treatment |
+|-----------------|-------|-------------------------------|
+| 0.00 – 0.25 | Low | Green badge, no review needed |
+| 0.25 – 0.45 | Moderate | Yellow badge, logged for trend tracking |
+| 0.45 – 0.65 | Elevated | Orange badge, worth a closer look |
+| 0.65 – 1.00 | High | Red badge, flagged for review |
+
+The thresholds drive only the professor's visualisation. The quiz / summary that the student actually receives is whatever the professor configured on the assignment (`mode` + `num_questions` on the class link), independent of the score.
 
 **Example scenarios:**
 
@@ -249,17 +251,17 @@ A fair question — if a student gets flagged and receives a comprehension check
 
 **How we handle it:**
 
-- **Tight time window** — the quiz is 3 questions about work the student supposedly wrote. If they actually understand it, answering should take a minute or two. The extension enforces a short, fair time limit — enough for someone who knows their work, but not enough to comfortably copy each question into an LLM, read the response, and paste it back three times.
+- **Tight time window** — the quiz is a small set of MCQs (default 10, professor-configurable per assignment) about work the student supposedly wrote. If they actually understand it, answering should take only a few minutes. The extension enforces a short, fair time limit — enough for someone who knows their work, but not enough to comfortably copy each question into an LLM, read the response, and paste it back ten times.
 
 - **Paste detection on quiz answers** — the extension monitors paste events directly on the quiz answer fields. If a student pastes text into their answer instead of typing it, that's logged as a signal. A student who genuinely understands their own work doesn't need to paste answers to questions about it. This alone isn't damning — maybe they're just a fast typist who composed in another field — but combined with other signals, it tells a story.
 
-- **Tab-switch and focus detection** — the extension listens for `visibilitychange` and `blur` events on the quiz page. If the student switches to another tab, opens a new window, or leaves the quiz page during those 3 questions, the extension logs it. It doesn't block the behavior — it records it. A student who stays focused and answers quickly looks very different from one who alt-tabs 6 times during a 90-second quiz.
+- **Tab-switch and focus detection** — the extension listens for `visibilitychange` and `blur` events on the quiz page. If the student switches to another tab, opens a new window, or leaves the quiz page during the quiz, the extension logs it. It doesn't block the behavior — it records it. A student who stays focused and answers quickly looks very different from one who alt-tabs repeatedly across the configured questions.
 
 - **All quiz-time behavior feeds into the confidence score** — this is the key insight. We don't treat any single action as proof of cheating. We treat it as another behavioral signal. A student who was flagged, stayed focused on the quiz, typed their answers, and got them right? Their flag weight drops significantly — they clearly understand the material. A student who was flagged, switched tabs 5 times, pasted in their answers, and took 4 minutes on a simple question? That behavior itself adds weight to the flag, even if they eventually got the answers right. The professor sees all of it.
 
 - **The math doesn't work in the student's favor** — even if a student manages to cheat on the quiz within the time limit, the combination of tab-switching + paste events + suspicious timing + whatever heuristics flagged them in the first place builds a pattern that the professor can see clearly on the dashboard. Cheating on the quiz doesn't clear the flag — it just adds more context.
 
-The result: students who actually understand their work breeze through the quiz in 60 seconds, type their answers, their flag drops, and they move on. Students who don't understand their work either struggle honestly (which is valuable feedback for the professor) or exhibit suspicious behavior trying to cheat the quiz (which is equally valuable information). Either way, the professor gets a clearer picture.
+The result: students who actually understand their work breeze through the quiz quickly, type their answers, their confidence score drops on the professor dashboard, and they move on. Students who don't understand their work either struggle honestly (which is valuable feedback for the professor) or exhibit suspicious behavior trying to cheat the quiz (which is equally valuable information). Either way, the professor gets a clearer picture.
 
 #### More Heuristics to Come
 
