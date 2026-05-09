@@ -336,22 +336,31 @@ function SubmitTab({ student, myClasses }) {
   const [assignments, setAssignments] = useState([])
   const [contextId, setContextId] = useState('')
   const [files, setFiles] = useState([])
-  const [mode, setMode] = useState('quiz')
   const [error, setError] = useState('')
   const [submitResult, setSubmitResult] = useState(null)
   const [quizState, setQuizState] = useState(null)
 
+  // Verification mode and num_questions are set per-assignment by the
+  // professor and arrive on `cls.contexts[i]`. Student no longer chooses.
   useEffect(() => {
     if (!selectedClass) { setAssignments([]); return }
     getClass(selectedClass).then(cls => {
-      const entries = (cls.contexts || []).map(e => typeof e === 'string' ? e : e.context_id).filter(Boolean)
-      if (entries.length > 0) {
-        Promise.all(entries.map(cid =>
-          fetch(`/api/context/${cid}`).then(r => r.json()).catch(() => null)
-        )).then(r => setAssignments(r.filter(Boolean)))
-      } else setAssignments([])
+      const entries = (cls.contexts || []).map(e =>
+        typeof e === 'string'
+          ? { context_id: e, mode: 'quiz', num_questions: 10 }
+          : e
+      ).filter(e => e.context_id)
+      if (entries.length === 0) { setAssignments([]); return }
+      Promise.all(entries.map(entry =>
+        fetch(`/api/context/${entry.context_id}`).then(r => r.json())
+          .then(c => c ? { ...c, mode: entry.mode || 'quiz', num_questions: entry.num_questions ?? 10 } : null)
+          .catch(() => null)
+      )).then(r => setAssignments(r.filter(Boolean)))
     }).catch(() => setAssignments([]))
   }, [selectedClass])
+
+  const selectedAssignment = assignments.find(a => a.context_id === contextId) || null
+  const assignmentMode = selectedAssignment?.mode || 'quiz'
 
   const handleSubmit = async () => {
     if (!selectedClass) return setError('Select a class')
@@ -360,9 +369,9 @@ function SubmitTab({ student, myClasses }) {
     setError('')
     setStep('loading')
     try {
-      const res = await submitWork(contextId, files, mode, 3, student.student_id, selectedClass)
+      const res = await submitWork(contextId, files, student.student_id, selectedClass)
       setSubmitResult(res)
-      setStep('results')
+      setStep('received')
     } catch (e) {
       setError(e.message)
       setStep('upload')
@@ -383,9 +392,21 @@ function SubmitTab({ student, myClasses }) {
     setError('')
   }
 
+  // Effective mode is derived from what the backend actually returned for
+  // this submission (the professor-configured mode for this assignment).
+  const responseMode = submitResult
+    ? (submitResult.quiz && submitResult.summary
+        ? 'both'
+        : submitResult.quiz
+          ? 'quiz'
+          : submitResult.summary
+            ? 'summary'
+            : 'quiz')
+    : assignmentMode
+
   return (
     <div>
-      <StepIndicator step={step} mode={mode} />
+      <StepIndicator step={step} mode={responseMode} />
 
       <AnimatePresence mode="wait">
         {step === 'upload' && (
@@ -396,16 +417,22 @@ function SubmitTab({ student, myClasses }) {
               assignments={assignments}
               contextId={contextId} setContextId={setContextId}
               files={files} setFiles={setFiles}
-              mode={mode} setMode={setMode}
+              selectedAssignment={selectedAssignment}
               error={error}
               onSubmit={handleSubmit}
             />
           </motion.div>
         )}
         {step === 'loading' && <LoadingStep key="loading" />}
-        {step === 'results' && (
-          <motion.div key="results" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.4 }}>
-            <ResultsStep result={submitResult} onStartQuiz={startQuiz} onViewSummary={() => setStep('summary')} onReset={reset} mode={mode} />
+        {step === 'received' && (
+          <motion.div key="received" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.4 }}>
+            <ReceivedStep
+              result={submitResult}
+              mode={responseMode}
+              onStartQuiz={startQuiz}
+              onViewSummary={() => setStep('summary')}
+              onReset={reset}
+            />
           </motion.div>
         )}
         {step === 'quiz' && (
@@ -414,7 +441,7 @@ function SubmitTab({ student, myClasses }) {
               quizState={quizState} setQuizState={setQuizState}
               contextId={contextId}
               submissionText={submitResult?.extracted_text || ''}
-              onComplete={() => setStep('done')}
+              onComplete={() => setStep(submitResult?.summary ? 'summary' : 'done')}
             />
           </motion.div>
         )}
@@ -437,11 +464,12 @@ function SubmitTab({ student, myClasses }) {
    STEP INDICATOR
    ============================================================ */
 function StepIndicator({ step, mode }) {
+  const checkLabel = mode === 'summary' ? 'Summary' : mode === 'both' ? 'Quiz + Summary' : 'Quiz'
   const steps = [
     { id: 'upload', label: 'Upload' },
-    { id: 'analyzing', label: 'Analyzing', match: ['loading'] },
-    { id: 'results', label: 'Results', match: ['results'] },
-    { id: 'check', label: mode === 'summary' ? 'Summary' : 'Quiz', match: ['quiz', 'summary'] },
+    { id: 'analyzing', label: 'Processing', match: ['loading'] },
+    { id: 'received', label: 'Received', match: ['received'] },
+    { id: 'check', label: checkLabel, match: ['quiz', 'summary'] },
     { id: 'done', label: 'Done', match: ['done'] },
   ]
   const activeIdx = steps.findIndex(s => s.id === step || (s.match && s.match.includes(step)))
@@ -473,7 +501,7 @@ function StepIndicator({ step, mode }) {
 /* ============================================================
    UPLOAD FORM
    ============================================================ */
-function UploadForm({ myClasses, selectedClass, setSelectedClass, assignments, contextId, setContextId, files, setFiles, mode, setMode, error, onSubmit }) {
+function UploadForm({ myClasses, selectedClass, setSelectedClass, assignments, contextId, setContextId, files, setFiles, selectedAssignment, error, onSubmit }) {
   const [dragOver, setDragOver] = useState(false)
 
   const onDrop = (e) => {
@@ -561,36 +589,37 @@ function UploadForm({ myClasses, selectedClass, setSelectedClass, assignments, c
         </label>
       </div>
 
-      <div style={{ marginBottom: 22 }}>
-        <div className="label">Verification mode</div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
-          {[
-            { id: 'quiz', label: 'Quiz', desc: '4-option MCQ', icon: '❓' },
-            { id: 'summary', label: 'Summary', desc: 'Reflection', icon: '📝' },
-            { id: 'both', label: 'Both', desc: 'Quiz + summary', icon: '✨' },
-          ].map(opt => (
-            <motion.button
-              key={opt.id}
-              type="button"
-              whileHover={{ y: -2 }}
-              whileTap={{ scale: 0.98 }}
-              onClick={() => setMode(opt.id)}
-              style={{
-                padding: 14, textAlign: 'left', borderRadius: 12,
-                background: mode === opt.id ? 'var(--violet-soft)' : 'var(--bg-input)',
-                border: `1px solid ${mode === opt.id ? 'var(--violet)' : 'var(--border)'}`,
-                transition: 'all 200ms',
-                cursor: 'pointer',
-                boxShadow: mode === opt.id ? '0 0 0 3px rgba(139,92,246,0.15), 0 8px 24px rgba(139,92,246,0.15)' : 'none',
-              }}
-            >
-              <div style={{ fontSize: 20, marginBottom: 4 }}>{opt.icon}</div>
-              <div style={{ fontSize: 13.5, fontWeight: 700, color: mode === opt.id ? 'var(--violet-bright)' : 'var(--text-bright)' }}>{opt.label}</div>
-              <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>{opt.desc}</div>
-            </motion.button>
-          ))}
+      {selectedAssignment && (
+        <div style={{
+          marginBottom: 22,
+          padding: 14,
+          borderRadius: 12,
+          background: 'var(--bg-input)',
+          border: '1px solid var(--border)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          flexWrap: 'wrap',
+        }}>
+          <div style={{
+            width: 36, height: 36, borderRadius: 10,
+            background: 'var(--grad-primary)',
+            display: 'grid', placeItems: 'center', fontSize: 18,
+          }}>{selectedAssignment.mode === 'summary' ? '📝' : '❓'}</div>
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-bright)' }}>
+              Comprehension check
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              {selectedAssignment.mode === 'summary'
+                ? 'Your professor will give you a guided summary of your work — no quiz on this assignment.'
+                : selectedAssignment.mode === 'both'
+                  ? `Your professor will ask ${selectedAssignment.num_questions} comprehension question${selectedAssignment.num_questions === 1 ? '' : 's'} followed by a summary walkthrough.`
+                  : `Your professor will ask ${selectedAssignment.num_questions} comprehension question${selectedAssignment.num_questions === 1 ? '' : 's'} drawn from your work and the spec.`}
+            </div>
+          </div>
         </div>
-      </div>
+      )}
 
       {error && (
         <motion.div
@@ -694,75 +723,68 @@ function LoadingStep() {
 }
 
 /* ============================================================
-   RESULTS — AI gauge + confidence ring
+   RECEIVED — friendly post-submit landing, no AI signals shown
+   ============================================================
+   The student deliberately does not see ai_detection, style deviation,
+   or confidence score. Those signals are visible only to the professor
+   on /classes/{id}/submissions.
    ============================================================ */
-function ResultsStep({ result, onStartQuiz, onViewSummary, onReset, mode }) {
-  const detection = result.ai_detection
-  const hasQuiz = result.quiz?.questions?.length > 0
-  const hasSummary = !!result.summary
-  const prob = detection?.ai_probability ?? null
+function ReceivedStep({ result, mode, onStartQuiz, onViewSummary, onReset }) {
+  const hasQuiz = (result?.quiz?.questions?.length || 0) > 0
+  const hasSummary = !!result?.summary
+  const numQ = result?.quiz?.questions?.length || 0
 
   return (
     <div className="stack">
-      {/* Hero result strip */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }} className="results-grid">
-        {detection && <DetectionCard detection={detection} />}
-        {result.confidence_score && <ConfidenceCard score={result.confidence_score} />}
-      </div>
-
-      {/* Style deviation (optional) */}
-      {result.style_analysis && (
-        <StyleCard analysis={result.style_analysis} />
-      )}
-
-      {/* Next step */}
       <motion.div
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.3 }}
+        transition={{ duration: 0.4 }}
         className="card"
         style={{
+          padding: 28,
           border: '1px solid transparent',
           background: `
             linear-gradient(var(--bg-card-solid), var(--bg-card-solid)) padding-box,
-            linear-gradient(135deg, rgba(139,92,246,0.6), rgba(34,211,238,0.4)) border-box
+            linear-gradient(135deg, rgba(16,185,129,0.5), rgba(34,211,238,0.4)) border-box
           `,
         }}
       >
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16 }}>
           <div style={{
-            width: 44, height: 44, borderRadius: 12, flexShrink: 0,
+            width: 48, height: 48, borderRadius: 14, flexShrink: 0,
             background: 'var(--grad-success)',
-            display: 'grid', placeItems: 'center', fontSize: 20,
-            boxShadow: '0 8px 24px rgba(16, 185, 129, 0.3)',
+            display: 'grid', placeItems: 'center', fontSize: 22,
+            boxShadow: '0 10px 28px rgba(16, 185, 129, 0.35)',
           }}>✓</div>
           <div style={{ flex: 1 }}>
-            <h3 style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-bright)', marginBottom: 4 }}>
-              Comprehension check
+            <h3 style={{ fontSize: 18, fontWeight: 800, color: 'var(--text-bright)', marginBottom: 6 }}>
+              Submission received
             </h3>
-            <p style={{ color: 'var(--text-muted)', fontSize: 13.5, marginBottom: 14, lineHeight: 1.6 }}>
-              {prob !== null && prob > 0.5
-                ? 'Your submission was flagged — complete the check below to confirm your understanding.'
-                : 'Show you understand what you submitted. This helps verify authorship.'}
+            <p style={{ color: 'var(--text-muted)', fontSize: 13.5, marginBottom: 16, lineHeight: 1.6 }}>
+              {mode === 'summary'
+                ? 'Read through the comprehension walkthrough your professor configured for this assignment, then mark yourself done.'
+                : mode === 'both'
+                  ? `Answer ${numQ} comprehension question${numQ === 1 ? '' : 's'} drawn from your work and the spec. A summary walkthrough is available afterwards.`
+                  : `Answer ${numQ} comprehension question${numQ === 1 ? '' : 's'} drawn from your work and the spec. Do your best — this helps verify what you learned.`}
             </p>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-              {hasQuiz && (
+              {hasQuiz ? (
                 <MagneticButton className="btn btn-primary" onClick={onStartQuiz}>
-                  Take quiz · {result.quiz.questions.length} question{result.quiz.questions.length > 1 ? 's' : ''}
+                  Start quiz · {numQ} question{numQ === 1 ? '' : 's'}
                 </MagneticButton>
-              )}
-              {hasSummary && (
-                <button className="btn btn-secondary" onClick={onViewSummary}>View summary</button>
+              ) : hasSummary ? (
+                <MagneticButton className="btn btn-primary" onClick={onViewSummary}>
+                  Read walkthrough
+                </MagneticButton>
+              ) : (
+                <button className="btn btn-secondary" onClick={onReset}>Submit another</button>
               )}
               <button className="btn btn-ghost" onClick={onReset}>Start over</button>
             </div>
           </div>
         </div>
       </motion.div>
-
-      <style>{`
-        @media (max-width: 720px) { .results-grid { grid-template-columns: 1fr !important; } }
-      `}</style>
     </div>
   )
 }

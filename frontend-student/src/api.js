@@ -56,12 +56,11 @@ export async function getClass(classId) {
   return request(`/classes/${classId}`);
 }
 
-// Submit
-export async function submitWork(contextId, files, mode = 'quiz', numQuestions = 3, studentId = null, classId = null) {
+// Submit — verification mode and question count are set by the professor on
+// the class+assignment link; the student no longer chooses them.
+export async function submitWork(contextId, files, studentId = null, classId = null) {
   const form = new FormData();
   form.append('context_id', contextId);
-  form.append('mode', mode);
-  form.append('num_questions', numQuestions);
   if (studentId) form.append('student_id', studentId);
   if (classId) form.append('class_id', classId);
   for (const f of files) form.append('files', f);
