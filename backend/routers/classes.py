@@ -24,10 +24,14 @@ class JoinClassRequest(BaseModel):
 class AddContextRequest(BaseModel):
     context_id: str
     skip_detection: bool = False
+    mode: str = "quiz"  # "quiz" | "summary" | "both"
+    num_questions: int = 10
 
 
 class UpdateContextSettingsRequest(BaseModel):
-    skip_detection: bool
+    skip_detection: bool | None = None
+    mode: str | None = None  # "quiz" | "summary" | "both"
+    num_questions: int | None = None
 
 
 @router.post("/")
@@ -55,7 +59,14 @@ async def join_existing_class(class_id: str, req: JoinClassRequest, db: AsyncSes
 
 @router.post("/{class_id}/context")
 async def link_context_to_class(class_id: str, req: AddContextRequest, db: AsyncSession = Depends(get_db)):
-    return await add_context_to_class(db, class_id, req.context_id, req.skip_detection)
+    return await add_context_to_class(
+        db,
+        class_id,
+        req.context_id,
+        skip_detection=req.skip_detection,
+        mode=req.mode,
+        num_questions=req.num_questions,
+    )
 
 
 @router.patch("/{class_id}/context/{context_id}")
@@ -63,7 +74,14 @@ async def update_class_context_settings(
     class_id: str, context_id: str, req: UpdateContextSettingsRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    return await update_context_settings(db, class_id, context_id, req.skip_detection)
+    return await update_context_settings(
+        db,
+        class_id,
+        context_id,
+        skip_detection=req.skip_detection,
+        mode=req.mode,
+        num_questions=req.num_questions,
+    )
 
 
 @router.get("/{class_id}/context/{context_id}/settings")

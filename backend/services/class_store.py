@@ -54,24 +54,65 @@ async def join_class(db: AsyncSession, class_id: str, student_id: str) -> dict:
     return await get_class(db, class_id)
 
 
-async def add_context_to_class(db: AsyncSession, class_id: str, context_id: str, skip_detection: bool = False) -> dict:
+VALID_MODES = {"quiz", "summary", "both"}
+
+
+def _normalize_mode(mode: str | None) -> str:
+    m = (mode or "quiz").strip().lower()
+    return m if m in VALID_MODES else "quiz"
+
+
+def _normalize_num_questions(n: int | None) -> int:
+    try:
+        v = int(n) if n is not None else 10
+    except (TypeError, ValueError):
+        v = 10
+    return max(1, min(20, v))
+
+
+async def add_context_to_class(
+    db: AsyncSession,
+    class_id: str,
+    context_id: str,
+    skip_detection: bool = False,
+    mode: str = "quiz",
+    num_questions: int = 10,
+) -> dict:
     existing = await db.execute(
         select(ClassContext).where(ClassContext.class_id == class_id, ClassContext.context_id == context_id)
     )
     if not existing.scalar_one_or_none():
-        db.add(ClassContext(class_id=class_id, context_id=context_id, skip_detection=skip_detection))
+        db.add(ClassContext(
+            class_id=class_id,
+            context_id=context_id,
+            skip_detection=skip_detection,
+            mode=_normalize_mode(mode),
+            num_questions=_normalize_num_questions(num_questions),
+        ))
         await db.commit()
     return await get_class(db, class_id)
 
 
-async def update_context_settings(db: AsyncSession, class_id: str, context_id: str, skip_detection: bool) -> dict:
+async def update_context_settings(
+    db: AsyncSession,
+    class_id: str,
+    context_id: str,
+    skip_detection: bool | None = None,
+    mode: str | None = None,
+    num_questions: int | None = None,
+) -> dict:
     result = await db.execute(
         select(ClassContext).where(ClassContext.class_id == class_id, ClassContext.context_id == context_id)
     )
     link = result.scalar_one_or_none()
     if not link:
         raise HTTPException(status_code=404, detail="Assignment not linked to this class.")
-    link.skip_detection = skip_detection
+    if skip_detection is not None:
+        link.skip_detection = skip_detection
+    if mode is not None:
+        link.mode = _normalize_mode(mode)
+    if num_questions is not None:
+        link.num_questions = _normalize_num_questions(num_questions)
     await db.commit()
     return await get_class(db, class_id)
 
@@ -82,8 +123,18 @@ async def get_context_settings(db: AsyncSession, class_id: str, context_id: str)
     )
     link = result.scalar_one_or_none()
     if not link:
-        return {"context_id": context_id, "skip_detection": False}
-    return {"context_id": link.context_id, "skip_detection": link.skip_detection}
+        return {
+            "context_id": context_id,
+            "skip_detection": False,
+            "mode": "quiz",
+            "num_questions": 10,
+        }
+    return {
+        "context_id": link.context_id,
+        "skip_detection": link.skip_detection,
+        "mode": link.mode or "quiz",
+        "num_questions": link.num_questions or 10,
+    }
 
 
 async def get_classes_for_student(db: AsyncSession, student_id: str) -> list[dict]:
@@ -102,7 +153,12 @@ def _serialize(cls: Class) -> dict:
         "name": cls.name,
         "students": [s.id for s in cls.students] if cls.students else [],
         "contexts": [
-            {"context_id": link.context_id, "skip_detection": link.skip_detection}
+            {
+                "context_id": link.context_id,
+                "skip_detection": link.skip_detection,
+                "mode": link.mode or "quiz",
+                "num_questions": link.num_questions or 10,
+            }
             for link in cls.context_links
         ] if cls.context_links else [],
     }

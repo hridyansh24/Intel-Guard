@@ -93,36 +93,44 @@ Output JSON only, no other text:
 {"label": "AI-generated | human-written | hybrid | uncertain", "confidence": 0.0-1.0, "signals": [{"name": "...", "evidence": "...", "weight": "low | medium | high"}], "rationale": "1-3 concise sentences"}"""
 
 
-QUIZ_GENERATION_PROMPT = """Role: university instructor creating a multiple-choice comprehension check. Verify student understands the work THEY submitted — not external trivia.
+QUIZ_GENERATION_PROMPT = """Role: university instructor writing a CONCEPTUAL comprehension check. Goal: confirm the student understands the IDEAS the assignment was teaching, not that they can read their own paper back.
 
-Inputs: ASSIGNMENT SPECIFICATION, STUDENT SUBMISSION.
+Inputs: ASSIGNMENT SPECIFICATION (the source of truth for the concepts being tested), STUDENT SUBMISSION (used as evidence of how the student applied those concepts).
 
-Generate exactly {num_questions} MCQs. Each question has exactly 4 options.
+Generate exactly {num_questions} multiple-choice questions. Each question has exactly 4 options.
 
-CRITICAL RULES:
-- EVERY question and option must be grounded in facts literally present in STUDENT SUBMISSION or ASSIGNMENT SPEC. Do NOT invent variable names, function names, concepts, terminology, or examples not in the actual text.
-- If unsure whether a fact is in the submission, DO NOT use it. Zero hallucinations.
-- Correct answer must be unambiguously supported by a specific detail you could quote verbatim.
-- Difficulty: LOW-MEDIUM. A student who actually wrote/understood the submission answers easily without trick reasoning. Err on easier.
+REQUIRED MIX (aim for the following distribution across the {num_questions} questions):
+- ~40% CONCEPTUAL: test understanding of a concept, definition, principle, technique, or argument named or required by the ASSIGNMENT SPECIFICATION. The question should be answerable by anyone who genuinely studied the topic — it should NOT depend on a literal phrase from the submission.
+- ~40% APPLIED: about a specific decision, design choice, structural move, or claim visible in the STUDENT SUBMISSION. Ask "why" or "how" the student applied the concept, not "what word did you use". The student should need to understand their own work to answer.
+- ~20% TRANSFER: a small perturbation. "What would happen if input X changed?", "If the spec asked for Y instead of Z, which step would change?", "Which assumption fails when N=0?". Tests whether they can move the idea one step.
+
+HARD BANS:
+- No literal-string recall ("what variable name did you use?", "what is the second sentence?", "what does the comment on line 14 say?"). These verify nothing.
+- No questions that can be answered by ctrl-F-ing the submission for a single token.
+- No trivia from outside the spec.
 - No "all of the above" / "none of the above".
-- Distractors must be plausible but clearly wrong to someone who understands the submission:
-  * Facts from spec not actually applied in submission
-  * Common misconceptions about the topic
-  * Plausible-sounding but factually incorrect alternatives
-  * Related concepts one step off from what submission does
-- Keep questions under 30 words; each option under 20 words.
-- Code: ask what a named function does, value returned for a concrete input, library/import used, design choice made — only identifiers that exist in the code.
-- Essays: ask about thesis, specific evidence cited, argument structure — phrasing that matches submission.
+- No questions a student who fully understood the assignment could plausibly get wrong on a fair reading.
 
-Per question:
-- "question": text
+DESIGN RULES:
+- Anchor every question to (a) a concept stated or implied by the spec, OR (b) a specific reasoning/design step in the submission, OR (c) a concrete perturbation of either.
+- The correct answer must be defensible against a student who challenges it: cite the spec or submission evidence in `explanations`.
+- Difficulty LOW-MEDIUM. A student who genuinely did the work answers without trick reasoning.
+- Distractors must be plausible-but-wrong: a common misconception, a related concept one step off, a fact from the spec the submission did NOT apply, or a frequently-confused alternative.
+- Keep questions under 35 words; each option under 25 words.
+- Code submissions: ask about logic flow, why an approach was chosen, what a named function accomplishes conceptually, what would break under edge cases, which library/abstraction is appropriate. Avoid asking for variable names.
+- Prose/essay submissions: ask about thesis, evidentiary structure, the role a specific paragraph plays, how a concept is being applied, what would change if a counter-claim were accepted.
+
+Per question, output:
+- "question": the question text
 - "options": exactly 4 strings
-- "correct_index": 0-3
-- "explanations": exactly 4 strings, one per option, citing WHY correct or wrong with evidence from submission (quote where possible)
-- "question_number": integer from 1
+- "correct_index": integer 0-3
+- "explanations": exactly 4 strings, one per option, citing the underlying concept and the spec/submission evidence that makes the option correct or wrong
+- "category": one of "conceptual", "applied", "transfer"
+- "concept_tag": short label (2-6 words) naming the concept being tested, e.g. "recursion base case", "thesis-evidence link", "off-by-one boundary"
+- "question_number": integer starting at 1
 
 Output JSON only, no other text:
-{{"questions": [{{"question": "...", "options": ["...", "...", "...", "..."], "correct_index": 0, "explanations": ["...", "...", "...", "..."], "question_number": 1}}]}}"""
+{{"questions": [{{"question": "...", "options": ["...", "...", "...", "..."], "correct_index": 0, "explanations": ["...", "...", "...", "..."], "category": "conceptual", "concept_tag": "...", "question_number": 1}}]}}"""
 
 
 EVALUATE_PROMPT = """Role: evaluate student's answer to a comprehension check about their own submission.

@@ -1,4 +1,4 @@
-from typing import Literal, Optional
+from typing import Optional
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.database import get_db
@@ -20,12 +20,16 @@ from backend.schemas import SubmitResponse
 router = APIRouter(prefix="/submit", tags=["submit"])
 
 
+# Quiz pool multiplier: each fresh generation produces (num_questions * POOL_MULTIPLIER)
+# questions, which are served num_questions at a time. Smaller multiplier = cheaper
+# generation but more frequent regenerations.
+POOL_MULTIPLIER = 2
+
+
 @router.post("/", response_model=SubmitResponse)
 async def submit(
     context_id: str = Form(...),
     files: list[UploadFile] = File(..., description="Upload 1-10 submission files"),
-    mode: Literal["quiz", "summary", "both"] = Form("quiz"),
-    num_questions: int = Form(3),
     student_id: Optional[str] = Form(None),
     class_id: Optional[str] = Form(None),
     db: AsyncSession = Depends(get_db),
@@ -38,14 +42,22 @@ async def submit(
     else:
         submission_text, file_type = await extract_text_multi(files, db)
 
-    # Determine skip_detection from class settings
+    # Per-assignment settings come from the class link the professor configured.
+    # Defaults match a fresh assignment with no class link.
     skip_detection = False
+    mode = "quiz"
+    num_questions = 10
     if class_id:
         try:
             ctx_settings = await get_context_settings(db, class_id, context_id)
             skip_detection = ctx_settings.get("skip_detection", False)
+            mode = ctx_settings.get("mode", "quiz")
+            num_questions = int(ctx_settings.get("num_questions", 10))
         except Exception:
             pass
+    num_questions = max(1, min(20, num_questions))
+    if mode not in ("quiz", "summary", "both"):
+        mode = "quiz"
 
     spec = context["spec_text"]
     result = {
@@ -109,6 +121,7 @@ async def submit(
             result["confidence_score"] = compute_confidence_score(
                 ai_probability=ai_probability,
                 style_deviation=deviation["style_deviation_score"],
+                style_sufficient_history=deviation.get("sufficient_history", True),
             )
 
         await update_profile(
@@ -117,11 +130,15 @@ async def submit(
         )
 
     elif student_id and ai_probability is not None:
-        result["confidence_score"] = compute_confidence_score(ai_probability=ai_probability, style_deviation=0.0)
+        result["confidence_score"] = compute_confidence_score(
+            ai_probability=ai_probability,
+            style_deviation=0.0,
+            style_sufficient_history=False,
+        )
 
     # --- Quiz Generation ---
     if mode in ("quiz", "both"):
-        pool_size = num_questions * 4
+        pool_size = num_questions * POOL_MULTIPLIER
 
         async def _generate_quiz_pool():
             system = QUIZ_GENERATION_PROMPT.format(num_questions=pool_size)
@@ -172,7 +189,7 @@ async def submit(
             await save_result(db, context_id, submission_text, "summary", summary)
         result["summary"] = summary
 
-    # Save submission record
+    # Save submission record (with full ai_detection / style / confidence intact)
     if student_id and class_id:
         try:
             stu = await get_student(db, student_id)
@@ -184,4 +201,12 @@ async def submit(
         except Exception:
             pass
 
-    return SubmitResponse(**result)
+    # Build the student-facing response. AI detection, style analysis, and
+    # confidence score are intentionally hidden from students — those signals
+    # are visible only to professors via /classes/{id}/submissions and
+    # /submissions/{id}, which read the persisted record above.
+    student_response = dict(result)
+    student_response["ai_detection"] = None
+    student_response["style_analysis"] = None
+    student_response["confidence_score"] = None
+    return SubmitResponse(**student_response)

@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from backend.database import init_db
-from backend.routers import context, analyze, quiz, summary, submit, style, students, classes, submissions
+from backend.routers import context, analyze, quiz, summary, submit, style, students, professors, classes, submissions
 
 
 @asynccontextmanager
@@ -39,6 +39,7 @@ app.include_router(summary.router)
 app.include_router(submit.router)
 app.include_router(style.router)
 app.include_router(students.router)
+app.include_router(professors.router)
 app.include_router(classes.router)
 app.include_router(submissions.router)
 

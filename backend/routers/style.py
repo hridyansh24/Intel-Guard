@@ -115,7 +115,11 @@ async def compare_submission(
 
     confidence = None
     if ai_probability is not None:
-        confidence = compute_confidence_score(ai_probability=ai_probability, style_deviation=deviation["style_deviation_score"])
+        confidence = compute_confidence_score(
+            ai_probability=ai_probability,
+            style_deviation=deviation["style_deviation_score"],
+            style_sufficient_history=deviation.get("sufficient_history", True),
+        )
 
     return StyleCompareResponse(
         student_id=student_id,

@@ -275,6 +275,19 @@ VECTOR_WEIGHTS = {
 MIN_SUBMISSIONS_FOR_COMPARISON = 3
 MIN_WORD_COUNT = 300
 
+# (A2) Named constant for converting cosine distance into a z-equivalent.
+# Cosine distance between two vectors drawn from the same author's function-word
+# distribution typically sits in the 0.02-0.08 band on prose corpora. We treat
+# 0.05 as the "one-sigma" baseline so that doubling that distance ≈ 2-sigma.
+# Replaces the previous undocumented `dist * 20` (which encoded COSINE_STD = 0.05
+# implicitly).
+COSINE_STD = 0.05
+
+# (C) Coverage gating. The full set of weighted scalars + vectors is the upper
+# bound on coverage; we only down-weight when the actual covered-fraction is
+# below COVERAGE_FLOOR.
+COVERAGE_FLOOR = 0.5
+
 
 def _cosine_distance(a: list[float], b: list[float]) -> float:
     size = min(len(a), len(b))
@@ -286,6 +299,18 @@ def _cosine_distance(a: list[float], b: list[float]) -> float:
     if mag_a == 0 or mag_b == 0:
         return 0.0
     return round(1 - dot / (mag_a * mag_b), 6)
+
+
+def _quant_share(n: int) -> float:
+    """(B) Smooth schedule for the quantitative weight as profile depth grows.
+
+    Replaces the previous step function (50/50 → 60/40 → 70/30 at n=5 and n=8)
+    with a continuous mapping that goes from 0.30 at n=3 to ~0.66 at n=15 and
+    asymptotes at 0.70. Long-run target weights are unchanged.
+    """
+    if n <= MIN_SUBMISSIONS_FOR_COMPARISON:
+        return 0.30
+    return round(0.70 - 0.40 * math.exp(-(n - MIN_SUBMISSIONS_FOR_COMPARISON) / 4.0), 4)
 
 
 def compute_deviation(
@@ -333,7 +358,8 @@ def compute_deviation(
         if stored is None or new_vec is None or stored.get("n", 0) < MIN_SUBMISSIONS_FOR_COMPARISON:
             continue
         dist = _cosine_distance(stored["mean"], new_vec)
-        z_equiv = dist * 20
+        # (A2) cosine distance → z-equivalent via documented constant.
+        z_equiv = dist / COSINE_STD if COSINE_STD > 0 else 0.0
         z_capped = min(z_equiv, 4.0)
         all_deviations.append({
             "metric": metric, "z_score": round(z_equiv, 2), "weight": weight,
@@ -344,7 +370,18 @@ def compute_deviation(
     total_weighted_z = sum(d["weighted_z"] for d in all_deviations)
     quant_dev = min((total_weighted_z / total_weight) / 4.0, 1.0)
 
+    # (C) Coverage: how much of the weighted-metric universe actually had
+    # enough history to contribute? If less than COVERAGE_FLOOR, scale the
+    # quantitative deviation down — a profile that only matched on 1 metric
+    # shouldn't claim the same confidence as one that matched on 20.
+    expected_weight_universe = sum(SCALAR_WEIGHTS.values()) + sum(VECTOR_WEIGHTS.values())
+    covered_weight = sum(d["weight"] for d in all_deviations)
+    coverage = round(covered_weight / expected_weight_universe, 4) if expected_weight_universe else 0.0
+    if coverage < COVERAGE_FLOOR and coverage > 0:
+        quant_dev = round(quant_dev * (coverage / COVERAGE_FLOOR), 4)
+
     qual_dev = 0.0
+    qual_covered = False
     if new_qualitative and profile.get("qualitative", {}).get("dimensions"):
         deviations = []
         dims = profile["qualitative"]["dimensions"]
@@ -353,14 +390,17 @@ def compute_deviation(
             new_dim = new_qualitative.get(dim_name, {})
             if isinstance(new_dim, dict) and "score" in new_dim and "mean" in hist:
                 deviations.append(abs(new_dim["score"] - hist["mean"]) / 4.0)
-        qual_dev = sum(deviations) / len(deviations) if deviations else 0.0
+        if deviations:
+            qual_dev = sum(deviations) / len(deviations)
+            qual_covered = True
 
-    if n < 5:
-        combined = 0.5 * quant_dev + 0.5 * qual_dev
-    elif n < 8:
-        combined = 0.6 * quant_dev + 0.4 * qual_dev
+    # (B) Smooth quant/qual blend.
+    quant_share = _quant_share(n)
+    if not qual_covered:
+        # No qualitative signal this submission — full weight to quant.
+        combined = quant_dev
     else:
-        combined = 0.7 * quant_dev + 0.3 * qual_dev
+        combined = quant_share * quant_dev + (1 - quant_share) * qual_dev
 
     top_devs = sorted(all_deviations, key=lambda d: d["weighted_z"], reverse=True)[:5]
 
@@ -371,6 +411,11 @@ def compute_deviation(
         "top_deviations": top_devs,
         "sufficient_history": True,
         "submission_count": n,
+        # New auditable fields:
+        "coverage": coverage,
+        "covered_metric_count": len(all_deviations),
+        "quant_share": quant_share,
+        "qual_covered": qual_covered,
     }
 
 
@@ -379,6 +424,7 @@ def compute_confidence_score(
     style_deviation: float,
     time_anomaly: float = 0.0,
     quiz_score: float | None = None,
+    style_sufficient_history: bool = True,
 ) -> dict:
     W_AI, W_STYLE, W_TIME = 0.50, 0.35, 0.15
     QUIZ_REDUCTION_MAX = 0.65
@@ -395,13 +441,19 @@ def compute_confidence_score(
         weighted_sum += ai_probability * W_AI
         total_weight += W_AI
 
-    if style_deviation > 0:
-        components["style_deviation"] = {
-            "value": round(style_deviation, 4), "weight": W_STYLE,
-            "contribution": round(style_deviation * W_STYLE, 4),
-        }
-        weighted_sum += style_deviation * W_STYLE
-        total_weight += W_STYLE
+    # (C) Style component is always included so the weighted denominator is
+    # stable. When history is insufficient (or no profile yet) we surface that
+    # explicitly via the `insufficient_history` flag instead of silently
+    # dropping the column — which would inflate the AI weight from 0.50 to 1.00.
+    style_value = max(0.0, float(style_deviation or 0.0))
+    components["style_deviation"] = {
+        "value": round(style_value, 4),
+        "weight": W_STYLE,
+        "contribution": round(style_value * W_STYLE, 4),
+        "insufficient_history": not style_sufficient_history,
+    }
+    weighted_sum += style_value * W_STYLE
+    total_weight += W_STYLE
 
     if time_anomaly > 0:
         components["time_anomaly"] = {

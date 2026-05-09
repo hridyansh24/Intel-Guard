@@ -23,9 +23,22 @@ class ClassContext(Base):
     class_id = Column(String, ForeignKey("classes.id"), primary_key=True)
     context_id = Column(String, ForeignKey("contexts.id"), primary_key=True)
     skip_detection = Column(Boolean, default=False)
+    # Per-assignment verification mode set by the professor.
+    # mode: "quiz" | "summary" | "both". Students can no longer choose.
+    mode = Column(String, default="quiz", nullable=False)
+    num_questions = Column(Integer, default=10, nullable=False)
 
 
 # ── Core tables ──
+
+class Professor(Base):
+    __tablename__ = "professors"
+    id = Column(String, primary_key=True)
+    name = Column(String, nullable=False)
+    password_hash = Column(String, nullable=False)
+    password_salt = Column(String, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
 
 class Student(Base):
     __tablename__ = "students"
