@@ -58,6 +58,24 @@ AI Guard does not ban AI. It does not accuse students of cheating. It exists bec
 
 ![AI Guard Flow](IMG_6229.png)
 
+### Submission flow (current — quiz-for-everyone, professor-set verification)
+
+The student no longer chooses the verification mode or question count, and never sees the AI / style / confidence signals — those are persisted alongside the submission and rendered only on the professor dashboard. The professor configures `mode` (`quiz` / `summary` / `both`) and `num_questions` per assignment when linking it to a class.
+
+```mermaid
+flowchart LR
+    Stu[Student uploads files via /submit/] --> Be[Backend reads<br/>per-assignment settings]
+    Be -->|mode + num_questions| Quiz[Quiz pool<br/>generation + cache]
+    Be -->|skip_detection?| Det[8-layer AI detection]
+    Be --> Sty[Style fingerprint<br/>+ deviation]
+    Det --> Persist[(submissions row<br/>full ai/style/confidence)]
+    Sty --> Persist
+    Quiz --> StuResp[Response to student<br/>quiz + summary only]
+    Persist --> ProfList[/classes/id/submissions/]
+    ProfList --> ProfUI[Professor dashboard:<br/>AI %, confidence, style dev,<br/>quiz score, attempts]
+    StuResp --> StuUI[Student dashboard:<br/>quiz / summary,<br/>no AI signals]
+```
+
 ### What's Built Now
 
 - **Python FastAPI backend** with async SQLAlchemy + PostgreSQL (Neon):
