@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { listClasses, createClass } from './api'
+import {
+  listClasses, createClass,
+  registerProfessor, loginProfessor, getProfessor,
+} from './api'
 import ClassDashboard from './pages/ClassDashboard'
 import ShieldOrb from './three/ShieldOrb'
 import ParticleField from './three/ParticleField'
@@ -14,7 +17,11 @@ const fadeUp = {
   show: (i = 0) => ({ opacity: 1, y: 0, transition: { duration: 0.6, delay: i * 0.08, ease: [0.22, 1, 0.36, 1] } }),
 }
 
+const PROFESSOR_LS_KEY = 'ai_guard_professor'
+
 export default function App() {
+  const [professor, setProfessor] = useState(null)
+  const [authLoading, setAuthLoading] = useState(true)
   const [classes, setClasses] = useState([])
   const [selectedClass, setSelectedClass] = useState(null)
   const [newClassName, setNewClassName] = useState('')
@@ -23,11 +30,37 @@ export default function App() {
   const [showCreate, setShowCreate] = useState(false)
   const mouseRef = useRef({ x: 0, y: 0 })
 
+  // Restore session from localStorage on first paint.
+  useEffect(() => {
+    const saved = localStorage.getItem(PROFESSOR_LS_KEY)
+    if (!saved) { setAuthLoading(false); return }
+    try {
+      const parsed = JSON.parse(saved)
+      getProfessor(parsed.professor_id)
+        .then(p => { setProfessor(p); setAuthLoading(false) })
+        .catch(() => { localStorage.removeItem(PROFESSOR_LS_KEY); setAuthLoading(false) })
+    } catch {
+      localStorage.removeItem(PROFESSOR_LS_KEY); setAuthLoading(false)
+    }
+  }, [])
+
   const fetchClasses = async () => {
     try { setClasses(await listClasses()) } catch {}
   }
 
-  useEffect(() => { fetchClasses() }, [])
+  useEffect(() => { if (professor) fetchClasses() }, [professor])
+
+  const handleAuth = (result) => {
+    localStorage.setItem(PROFESSOR_LS_KEY, JSON.stringify(result))
+    setProfessor(result)
+  }
+
+  const handleLogout = () => {
+    localStorage.removeItem(PROFESSOR_LS_KEY)
+    setProfessor(null)
+    setSelectedClass(null)
+    setClasses([])
+  }
 
   useEffect(() => {
     const onMove = (e) => {
@@ -54,6 +87,18 @@ export default function App() {
     } finally {
       setCreating(false)
     }
+  }
+
+  if (authLoading) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center' }}>
+        <div className="loader-dots"><span /><span /><span /></div>
+      </div>
+    )
+  }
+
+  if (!professor) {
+    return <ProfessorAuthPage onAuth={handleAuth} />
   }
 
   if (selectedClass) {
@@ -92,6 +137,12 @@ export default function App() {
             <div className="nav-stat-num"><Counter value={totalAssignments} /></div>
             <div className="nav-stat-lbl">Assignments</div>
           </div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginLeft: 16 }}>
+          <span style={{ fontSize: 13, color: 'var(--text-bright)', fontWeight: 600 }}>{professor.name}</span>
+          <button className="btn btn-ghost" onClick={handleLogout} style={{ fontSize: 12 }}>
+            Sign out
+          </button>
         </div>
       </motion.nav>
 
@@ -258,6 +309,206 @@ export default function App() {
           </motion.div>
         )}
       </AnimatePresence>
+    </div>
+  )
+}
+
+/* ============================================================
+   PROFESSOR AUTH PAGE — demo-grade signup / login
+   ============================================================ */
+function ProfessorAuthPage({ onAuth }) {
+  const [mode, setMode] = useState('signup')
+  const [name, setName] = useState('')
+  const [professorId, setProfessorId] = useState('')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [justRegisteredId, setJustRegisteredId] = useState('')
+  const mouseRef = useRef({ x: 0, y: 0 })
+
+  const onMouseMove = (e) => {
+    const { innerWidth: w, innerHeight: h } = window
+    mouseRef.current = { x: (e.clientX - w / 2) / w * 2, y: (e.clientY - h / 2) / h * 2 }
+  }
+
+  const switchMode = (m) => { setMode(m); setError(''); setPassword('') }
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    setError('')
+    try {
+      if (mode === 'signup') {
+        if (!name.trim()) return setError('Enter your name')
+        if (password.length < 4) return setError('Password must be at least 4 characters')
+        setLoading(true)
+        const p = await registerProfessor(name.trim(), password)
+        setJustRegisteredId(p.professor_id)
+        onAuth(p)
+      } else {
+        if (!professorId.trim()) return setError('Enter your professor ID')
+        if (!password) return setError('Enter your password')
+        setLoading(true)
+        const p = await loginProfessor(professorId.trim(), password)
+        onAuth(p)
+      }
+    } catch (err) {
+      setError(err.message)
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div onMouseMove={onMouseMove} style={{ position: 'relative', minHeight: '100vh', overflow: 'hidden' }}>
+      <div className="aurora" aria-hidden />
+      <div className="noise" aria-hidden />
+      <ParticleField />
+
+      <div style={{
+        position: 'relative', zIndex: 2, minHeight: '100vh',
+        display: 'grid', gridTemplateColumns: 'minmax(0, 1.05fr) minmax(0, 0.95fr)',
+        maxWidth: 1380, margin: '0 auto', padding: '48px 40px',
+        alignItems: 'center', gap: 48,
+      }} className="auth-grid">
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+          <Logo size={36} />
+          <span className="badge badge-cyan" style={{ alignSelf: 'flex-start' }}>Professor Console</span>
+
+          <motion.h1
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.7 }}
+            className="pro-hero-title"
+            style={{ marginTop: 4 }}
+          >
+            The command deck for <span className="grad-text">honest scholarship</span>.
+          </motion.h1>
+
+          <p className="pro-hero-sub" style={{ maxWidth: 560 }}>
+            Sign up to create classes, link assignments, and review submissions with AI-detection,
+            style-deviation, and confidence signals. Demo authentication — locally hosted.
+          </p>
+
+          <div className="pro-hero-chips">
+            <div className="chip"><span className="chip-dot chip-dot-cyan" />8-layer detection</div>
+            <div className="chip"><span className="chip-dot chip-dot-amber" />Style fingerprinting</div>
+            <div className="chip"><span className="chip-dot chip-dot-violet" />Per-assignment quizzes</div>
+          </div>
+
+          <div style={{ position: 'relative', width: 360, height: 220, marginTop: 8 }}>
+            <ShieldOrb height={220} mouseRef={mouseRef} />
+          </div>
+        </div>
+
+        <motion.div
+          initial={{ opacity: 0, y: 30, scale: 0.96 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
+          className="glass-card"
+          style={{
+            width: '100%',
+            maxWidth: 460,
+            marginLeft: 'auto',
+            padding: 32,
+            borderRadius: 20,
+            position: 'relative',
+          }}
+        >
+          <div style={{ textAlign: 'center', marginBottom: 22 }}>
+            <h2 style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-bright)', marginBottom: 4 }}>
+              {mode === 'signup' ? 'Create professor account' : 'Welcome back'}
+            </h2>
+            <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>
+              {mode === 'signup'
+                ? 'Sign up to access the professor console.'
+                : 'Sign in with your professor ID and password.'}
+            </p>
+          </div>
+
+          <div style={{ display: 'flex', gap: 4, padding: 4, background: 'rgba(10, 6, 24, 0.6)', borderRadius: 12, marginBottom: 22, border: '1px solid var(--border)' }}>
+            {['signup', 'login'].map(m => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => switchMode(m)}
+                style={{
+                  flex: 1, padding: '10px 12px',
+                  fontSize: 13, fontWeight: 700, letterSpacing: '0.02em',
+                  borderRadius: 8,
+                  background: mode === m ? 'var(--grad-primary)' : 'transparent',
+                  color: mode === m ? '#fff' : 'var(--text-muted)',
+                  transition: 'all 200ms',
+                }}
+              >
+                {m === 'signup' ? 'Sign Up' : 'Log In'}
+              </button>
+            ))}
+          </div>
+
+          <form onSubmit={handleSubmit}>
+            {mode === 'signup' ? (
+              <div style={{ marginBottom: 14 }}>
+                <div className="label">Full Name</div>
+                <input value={name} onChange={e => setName(e.target.value)} placeholder="Dr. Alex Morgan" autoFocus />
+              </div>
+            ) : (
+              <div style={{ marginBottom: 14 }}>
+                <div className="label">Professor ID</div>
+                <input value={professorId} onChange={e => setProfessorId(e.target.value)} placeholder="paste the id from signup" autoFocus />
+              </div>
+            )}
+
+            <div style={{ marginBottom: 18 }}>
+              <div className="label">Password</div>
+              <input type="password" value={password} onChange={e => setPassword(e.target.value)}
+                placeholder={mode === 'signup' ? 'Choose a password (min 4 chars)' : 'Your password'} />
+            </div>
+
+            {error && (
+              <div style={{
+                color: 'var(--rose-bright)', fontSize: 13, marginBottom: 12,
+                padding: '8px 12px', borderRadius: 8,
+                background: 'var(--rose-soft)', border: '1px solid rgba(244,63,94,0.3)',
+              }}>{error}</div>
+            )}
+
+            <MagneticButton className="btn btn-primary" disabled={loading} style={{ width: '100%', padding: '14px 22px', fontSize: 14 }}>
+              {loading ? (mode === 'signup' ? 'Creating account…' : 'Signing in…') : (mode === 'signup' ? 'Create account' : 'Log in')}
+            </MagneticButton>
+          </form>
+
+          {justRegisteredId && (
+            <div style={{
+              marginTop: 16, padding: 14, borderRadius: 12,
+              background: 'linear-gradient(135deg, rgba(16,185,129,0.14), rgba(34,211,238,0.1))',
+              border: '1px solid rgba(16, 185, 129, 0.3)',
+              fontSize: 12.5, color: 'var(--text)',
+            }}>
+              <div style={{ fontWeight: 700, color: 'var(--emerald-bright)', marginBottom: 4 }}>Account created</div>
+              Your Professor ID:{' '}
+              <code style={{
+                background: 'rgba(0,0,0,0.3)', padding: '2px 8px', borderRadius: 6,
+                fontFamily: "'JetBrains Mono', monospace", color: 'var(--text-bright)',
+              }}>{justRegisteredId}</code>
+              <div style={{ marginTop: 4, color: 'var(--text-dim)' }}>Save this — you'll need it to log in next time.</div>
+            </div>
+          )}
+
+          <div style={{ textAlign: 'center', marginTop: 16, color: 'var(--text-dim)', fontSize: 12 }}>
+            {mode === 'signup' ? 'Already registered? ' : 'New here? '}
+            <button type="button" onClick={() => switchMode(mode === 'signup' ? 'login' : 'signup')}
+              style={{ color: 'var(--cyan-bright)', fontWeight: 600, textDecoration: 'underline', padding: 0 }}>
+              {mode === 'signup' ? 'Log in' : 'Create an account'}
+            </button>
+          </div>
+        </motion.div>
+      </div>
+
+      <style>{`
+        @media (max-width: 880px) {
+          .auth-grid { grid-template-columns: 1fr !important; padding: 32px 20px !important; }
+        }
+      `}</style>
     </div>
   )
 }

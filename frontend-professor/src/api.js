@@ -9,6 +9,27 @@ async function request(path, options = {}) {
   return res.json();
 }
 
+// Professors (demo auth — frontend gating only)
+export async function registerProfessor(name, password) {
+  return request('/professors/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, password }),
+  });
+}
+
+export async function loginProfessor(professorId, password) {
+  return request('/professors/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ professor_id: professorId, password }),
+  });
+}
+
+export async function getProfessor(professorId) {
+  return request(`/professors/${professorId}`);
+}
+
 // Context (assignments)
 export async function createContext(title, files) {
   const form = new FormData();
@@ -46,19 +67,27 @@ export async function getClassStudents(classId) {
   return request(`/classes/${classId}/students`);
 }
 
-export async function addContextToClass(classId, contextId, skipDetection = false) {
+export async function addContextToClass(classId, contextId, opts = {}) {
+  const body = { context_id: contextId };
+  if (opts.skipDetection !== undefined) body.skip_detection = opts.skipDetection;
+  if (opts.mode !== undefined) body.mode = opts.mode;
+  if (opts.numQuestions !== undefined) body.num_questions = opts.numQuestions;
   return request(`/classes/${classId}/context`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ context_id: contextId, skip_detection: skipDetection }),
+    body: JSON.stringify(body),
   });
 }
 
-export async function updateContextSettings(classId, contextId, skipDetection) {
+export async function updateContextSettings(classId, contextId, patch = {}) {
+  const body = {};
+  if (patch.skipDetection !== undefined) body.skip_detection = patch.skipDetection;
+  if (patch.mode !== undefined) body.mode = patch.mode;
+  if (patch.numQuestions !== undefined) body.num_questions = patch.numQuestions;
   return request(`/classes/${classId}/context/${contextId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ skip_detection: skipDetection }),
+    body: JSON.stringify(body),
   });
 }
 

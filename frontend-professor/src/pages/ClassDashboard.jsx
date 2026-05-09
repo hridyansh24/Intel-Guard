@@ -51,14 +51,21 @@ export default function ClassDashboard({ classId, onBack }) {
   )
 
   const contextEntries = (cls.contexts || []).map(entry =>
-    typeof entry === 'string' ? { context_id: entry, skip_detection: false } : entry
+    typeof entry === 'string'
+      ? { context_id: entry, skip_detection: false, mode: 'quiz', num_questions: 10 }
+      : entry
   )
   const contextIds = new Set(contextEntries.map(e => e.context_id))
   const classContexts = allContexts
     .filter(c => contextIds.has(c.context_id))
     .map(c => {
-      const entry = contextEntries.find(e => e.context_id === c.context_id)
-      return { ...c, skip_detection: entry?.skip_detection || false }
+      const entry = contextEntries.find(e => e.context_id === c.context_id) || {}
+      return {
+        ...c,
+        skip_detection: entry.skip_detection ?? false,
+        mode: entry.mode || 'quiz',
+        num_questions: entry.num_questions ?? 10,
+      }
     })
 
   return (
@@ -215,6 +222,11 @@ function AssignmentsTab({ cls, classContexts, allContexts, classId, onRefresh })
   const [error, setError] = useState('')
   const [linkContextId, setLinkContextId] = useState('')
   const [drag, setDrag] = useState(false)
+  // Per-assignment verification settings the professor sets at create / link time.
+  const [createMode, setCreateMode] = useState('quiz')
+  const [createNumQ, setCreateNumQ] = useState(10)
+  const [linkMode, setLinkMode] = useState('quiz')
+  const [linkNumQ, setLinkNumQ] = useState(10)
   const inputRef = useRef()
 
   const linkedIds = new Set(classContexts.map(c => c.context_id))
@@ -225,8 +237,12 @@ function AssignmentsTab({ cls, classContexts, allContexts, classId, onRefresh })
     setLoading(true); setError('')
     try {
       const res = await createContext(title, files)
-      await addContextToClass(classId, res.context_id)
+      await addContextToClass(classId, res.context_id, {
+        mode: createMode,
+        numQuestions: createMode === 'summary' ? 0 : createNumQ,
+      })
       setTitle(''); setFiles([]); setShowCreate(false)
+      setCreateMode('quiz'); setCreateNumQ(10)
       onRefresh()
     } catch (e) {
       setError(e.message)
@@ -235,7 +251,14 @@ function AssignmentsTab({ cls, classContexts, allContexts, classId, onRefresh })
 
   const handleLink = async () => {
     if (!linkContextId) return
-    try { await addContextToClass(classId, linkContextId); setLinkContextId(''); onRefresh() } catch {}
+    try {
+      await addContextToClass(classId, linkContextId, {
+        mode: linkMode,
+        numQuestions: linkMode === 'summary' ? 0 : linkNumQ,
+      })
+      setLinkContextId(''); setLinkMode('quiz'); setLinkNumQ(10)
+      onRefresh()
+    } catch {}
   }
 
   const onDrop = (e) => {
@@ -312,6 +335,10 @@ function AssignmentsTab({ cls, classContexts, allContexts, classId, onRefresh })
                     </div>
                   )}
                 </div>
+                <VerificationSettings
+                  mode={createMode} setMode={setCreateMode}
+                  numQuestions={createNumQ} setNumQuestions={setCreateNumQ}
+                />
                 {error && <div style={{ color: 'var(--rose-bright)', fontSize: 13 }}>{error}</div>}
                 <div>
                   <MagneticButton onClick={handleCreate} disabled={loading}>
@@ -328,13 +355,17 @@ function AssignmentsTab({ cls, classContexts, allContexts, classId, onRefresh })
         <div className="pro-section">
           <div className="pro-section-title">Link existing assignment</div>
           <div className="pro-section-sub">These assignments exist in the system but aren't linked to this class yet.</div>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
             <select value={linkContextId} onChange={e => setLinkContextId(e.target.value)} style={{ flex: 1 }}>
               <option value="">Choose an assignment…</option>
               {unlinked.map(c => <option key={c.context_id} value={c.context_id}>{c.title}</option>)}
             </select>
             <MagneticButton onClick={handleLink} disabled={!linkContextId} className="btn btn-primary">Link</MagneticButton>
           </div>
+          <VerificationSettings
+            mode={linkMode} setMode={setLinkMode}
+            numQuestions={linkNumQ} setNumQuestions={setLinkNumQ}
+          />
         </div>
       )}
 
@@ -351,12 +382,96 @@ function AssignmentsTab({ cls, classContexts, allContexts, classId, onRefresh })
   )
 }
 
+function VerificationSettings({ mode, setMode, numQuestions, setNumQuestions, compact = false }) {
+  const modes = [
+    { id: 'quiz', label: 'Quiz', desc: 'MCQ comprehension check' },
+    { id: 'summary', label: 'Summary', desc: 'Walkthrough only' },
+    { id: 'both', label: 'Both', desc: 'Quiz + summary' },
+  ]
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div className="label" style={{ margin: 0 }}>Verification mode</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+        {modes.map(m => (
+          <button
+            key={m.id}
+            type="button"
+            onClick={() => setMode(m.id)}
+            style={{
+              padding: compact ? '8px 10px' : '12px 14px',
+              textAlign: 'left',
+              borderRadius: 10,
+              background: mode === m.id ? 'var(--violet-soft)' : 'var(--bg-input)',
+              border: `1px solid ${mode === m.id ? 'var(--violet)' : 'var(--border)'}`,
+              cursor: 'pointer',
+            }}
+          >
+            <div style={{ fontSize: 13, fontWeight: 700, color: mode === m.id ? 'var(--violet-bright)' : 'var(--text-bright)' }}>
+              {m.label}
+            </div>
+            <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>{m.desc}</div>
+          </button>
+        ))}
+      </div>
+      {mode !== 'summary' && (
+        <div>
+          <div className="label">Number of quiz questions</div>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+            <input
+              type="number" min={1} max={20} step={1}
+              value={numQuestions}
+              onChange={e => setNumQuestions(Math.max(1, Math.min(20, parseInt(e.target.value, 10) || 1)))}
+              style={{ width: 100 }}
+            />
+            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              Each student gets {numQuestions} {numQuestions === 1 ? 'question' : 'questions'} drawn from a fresh pool.
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function AssignmentRow({ ctx, classId, onRefresh, index }) {
-  const [toggling, setToggling] = useState(false)
-  const handleToggle = async () => {
-    setToggling(true)
-    try { await updateContextSettings(classId, ctx.context_id, !ctx.skip_detection); onRefresh() } catch {} finally { setToggling(false) }
+  const [busy, setBusy] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [draftMode, setDraftMode] = useState(ctx.mode || 'quiz')
+  const [draftNumQ, setDraftNumQ] = useState(ctx.num_questions || 10)
+
+  // When the editor opens, seed drafts from the latest server-side values.
+  useEffect(() => {
+    if (editing) {
+      setDraftMode(ctx.mode || 'quiz')
+      setDraftNumQ(ctx.num_questions || 10)
+    }
+  }, [editing, ctx.mode, ctx.num_questions])
+
+  const handleToggleSkip = async () => {
+    setBusy(true)
+    try { await updateContextSettings(classId, ctx.context_id, { skipDetection: !ctx.skip_detection }); onRefresh() }
+    catch {} finally { setBusy(false) }
   }
+
+  const saveEdit = async () => {
+    setBusy(true)
+    try {
+      await updateContextSettings(classId, ctx.context_id, {
+        mode: draftMode,
+        numQuestions: draftMode === 'summary' ? 0 : draftNumQ,
+      })
+      setEditing(false)
+      onRefresh()
+    } catch {} finally { setBusy(false) }
+  }
+
+  const modeLabel = ctx.mode === 'summary'
+    ? 'Summary only'
+    : ctx.mode === 'both'
+      ? `Quiz (${ctx.num_questions}) + summary`
+      : `Quiz · ${ctx.num_questions} q`
+  const modeBadge = ctx.mode === 'summary' ? 'badge-cyan' : ctx.mode === 'both' ? 'badge-violet' : 'badge-green'
+
   return (
     <motion.div
       custom={index}
@@ -364,32 +479,64 @@ function AssignmentRow({ ctx, classId, onRefresh, index }) {
       initial="hidden"
       animate="show"
       className="pro-row"
+      style={{ flexDirection: 'column', alignItems: 'stretch' }}
     >
-      <div className="pro-row-glyph amber">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-          <polyline points="14 2 14 8 20 8" />
-          <line x1="8" y1="13" x2="16" y2="13" />
-          <line x1="8" y1="17" x2="13" y2="17" />
-        </svg>
-      </div>
-      <div>
-        <div className="pro-row-title">{ctx.title}</div>
-        <div className="pro-row-sub">{ctx.context_id}</div>
-      </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <label style={{
-          display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12,
-          color: ctx.skip_detection ? 'var(--amber-bright)' : 'var(--text-dim)', cursor: 'pointer',
-        }}>
-          <input type="checkbox" checked={ctx.skip_detection} onChange={handleToggle} disabled={toggling}
-            style={{ width: 'auto', accentColor: 'var(--amber-bright)' }} />
-          Skip AI detection
-        </label>
-        <span className={`badge ${ctx.skip_detection ? 'badge-yellow' : 'badge-green'}`}>
-          {ctx.skip_detection ? 'Quiz only' : 'Active'}
-        </span>
+        <div className="pro-row-glyph amber">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <polyline points="14 2 14 8 20 8" />
+            <line x1="8" y1="13" x2="16" y2="13" />
+            <line x1="8" y1="17" x2="13" y2="17" />
+          </svg>
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="pro-row-title">{ctx.title}</div>
+          <div className="pro-row-sub">{ctx.context_id}</div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          <span className={`badge ${modeBadge}`}>{modeLabel}</span>
+          <span className={`badge ${ctx.skip_detection ? 'badge-yellow' : 'badge-cyan'}`}>
+            {ctx.skip_detection ? 'AI detection off' : 'AI detection on'}
+          </span>
+          <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={() => setEditing(e => !e)} disabled={busy}>
+            {editing ? 'Close' : 'Edit'}
+          </button>
+        </div>
       </div>
+      <AnimatePresence initial={false}>
+        {editing && (
+          <motion.div
+            initial={{ opacity: 0, height: 0, marginTop: 0 }}
+            animate={{ opacity: 1, height: 'auto', marginTop: 14 }}
+            exit={{ opacity: 0, height: 0, marginTop: 0 }}
+            transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+            style={{ overflow: 'hidden' }}
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14, padding: '4px 2px' }}>
+              <VerificationSettings
+                mode={draftMode} setMode={setDraftMode}
+                numQuestions={draftNumQ} setNumQuestions={setDraftNumQ}
+                compact
+              />
+              <label style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12,
+                color: ctx.skip_detection ? 'var(--amber-bright)' : 'var(--text-dim)', cursor: 'pointer',
+              }}>
+                <input type="checkbox" checked={ctx.skip_detection} onChange={handleToggleSkip} disabled={busy}
+                  style={{ width: 'auto', accentColor: 'var(--amber-bright)' }} />
+                Skip AI detection (saves cost; quiz still runs)
+              </label>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <MagneticButton className="btn btn-primary" onClick={saveEdit} disabled={busy}>
+                  {busy ? 'Saving…' : 'Save'}
+                </MagneticButton>
+                <button className="btn btn-ghost" onClick={() => setEditing(false)} disabled={busy}>Cancel</button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   )
 }
