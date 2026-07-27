@@ -101,9 +101,10 @@ export default function ClassDashboard({ classId, onBack }) {
               <span className="grad-text">{cls.name}</span>
             </div>
             <div className="pro-dash-subline">
-              {students.length} students · {classContexts.length} assignments · class id <span className="muted-mono">{classId}</span>
+              {students.length} students · {classContexts.length} assignments
             </div>
           </div>
+          <ClassCodeCard classId={classId} />
         </motion.div>
 
         {/* Metrics row */}
@@ -179,6 +180,76 @@ export default function ClassDashboard({ classId, onBack }) {
 }
 
 /* =========================================================
+   CLASS CODE CARD — prominent, copyable code the professor shares with
+   students so they can join the class. Without this the join flow is
+   invisible in the UI (the class_id is buried in a subline).
+   ========================================================= */
+function ClassCodeCard({ classId }) {
+  const [copied, setCopied] = useState(false)
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(classId)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1600)
+    } catch {
+      // Fallback for browsers without clipboard permission
+      const el = document.createElement('textarea')
+      el.value = classId
+      document.body.appendChild(el)
+      el.select()
+      try { document.execCommand('copy'); setCopied(true); setTimeout(() => setCopied(false), 1600) } catch {}
+      document.body.removeChild(el)
+    }
+  }
+  return (
+    <motion.div
+      initial={{ opacity: 0, scale: 0.95 }}
+      animate={{ opacity: 1, scale: 1 }}
+      transition={{ duration: 0.4, delay: 0.15 }}
+      style={{
+        display: 'inline-flex', flexDirection: 'column', gap: 8,
+        padding: '14px 18px', minWidth: 260,
+        borderRadius: 14,
+        background: 'linear-gradient(135deg, rgba(34,211,238,0.10), rgba(139,92,246,0.10))',
+        border: '1px solid var(--border-strong)',
+        boxShadow: '0 8px 24px rgba(34,211,238,0.08)',
+      }}
+    >
+      <div style={{
+        fontSize: 10.5, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase',
+        color: 'var(--cyan-bright)',
+      }}>
+        Class code — share with students
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <code style={{
+          fontFamily: "'JetBrains Mono', monospace",
+          fontSize: 22, fontWeight: 700, letterSpacing: '0.08em',
+          color: 'var(--text-bright)',
+          padding: '4px 12px',
+          borderRadius: 8,
+          background: 'rgba(0,0,0,0.25)',
+          userSelect: 'all',
+          flex: 1,
+        }}>{classId}</code>
+        <button
+          className="btn btn-ghost"
+          onClick={handleCopy}
+          style={{ fontSize: 12, padding: '8px 12px', whiteSpace: 'nowrap' }}
+          aria-label="Copy class code to clipboard"
+        >
+          {copied ? '✓ Copied' : 'Copy'}
+        </button>
+      </div>
+      <div style={{ fontSize: 11.5, color: 'var(--text-muted)', lineHeight: 1.45 }}>
+        Students enter this code in their portal to join.
+      </div>
+    </motion.div>
+  )
+}
+
+
+/* =========================================================
    STAT TILES
    ========================================================= */
 function StatTile({ label, value, accent = 'cyan' }) {
@@ -211,6 +282,7 @@ function AssignmentsTab({ cls, classContexts, allContexts, classId, onRefresh })
   const [showCreate, setShowCreate] = useState(false)
   const [title, setTitle] = useState('')
   const [files, setFiles] = useState([])
+  const [specText, setSpecText] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [linkContextId, setLinkContextId] = useState('')
@@ -221,12 +293,20 @@ function AssignmentsTab({ cls, classContexts, allContexts, classId, onRefresh })
   const unlinked = allContexts.filter(c => !linkedIds.has(c.context_id))
 
   const handleCreate = async () => {
-    if (!title.trim() || files.length === 0) return setError('Title and files required')
+    if (!title.trim()) return setError('Give the assignment a title')
+    const hasFiles = files.length > 0
+    const hasText = specText.trim().length > 0
+    if (!hasFiles && !hasText) return setError('Upload a spec file or paste the assignment description below')
     setLoading(true); setError('')
     try {
-      const res = await createContext(title, files)
+      // If the professor typed the spec inline, wrap it as a virtual .txt file
+      // so the same backend endpoint handles both flows. Keeps this a frontend-only change.
+      const payloadFiles = hasFiles
+        ? files
+        : [new File([specText], `${title.replace(/[^a-z0-9-_]+/gi, '_').slice(0, 40) || 'spec'}.txt`, { type: 'text/plain' })]
+      const res = await createContext(title, payloadFiles)
       await addContextToClass(classId, res.context_id)
-      setTitle(''); setFiles([]); setShowCreate(false)
+      setTitle(''); setFiles([]); setSpecText(''); setShowCreate(false)
       onRefresh()
     } catch (e) {
       setError(e.message)
@@ -275,7 +355,7 @@ function AssignmentsTab({ cls, classContexts, allContexts, classId, onRefresh })
                   <input value={title} onChange={e => setTitle(e.target.value)} placeholder="e.g., Homework 3 — Sorting Algorithms" />
                 </div>
                 <div>
-                  <div className="label">Spec files</div>
+                  <div className="label">Assignment spec — upload files <span style={{ color: 'var(--text-dim)', fontWeight: 500 }}>or paste below</span></div>
                   <div
                     className={`pro-drop ${drag ? 'active' : ''}`}
                     onClick={() => inputRef.current?.click()}
@@ -311,6 +391,34 @@ function AssignmentsTab({ cls, classContexts, allContexts, classId, onRefresh })
                       ))}
                     </div>
                   )}
+                </div>
+                <div>
+                  <div className="label" style={{ marginTop: 4 }}>
+                    Or paste the assignment description
+                    <span style={{ color: 'var(--text-dim)', fontWeight: 500, marginLeft: 6 }}>
+                      (used only if no files are uploaded)
+                    </span>
+                  </div>
+                  <textarea
+                    value={specText}
+                    onChange={e => setSpecText(e.target.value)}
+                    placeholder={"e.g., Implement a recursive factorial(n).\nLearning objectives: recursion (base case, recursive step), input validation for negative inputs..."}
+                    rows={5}
+                    disabled={files.length > 0}
+                    style={{
+                      width: '100%',
+                      fontFamily: 'inherit',
+                      fontSize: 13,
+                      lineHeight: 1.5,
+                      padding: '10px 12px',
+                      borderRadius: 10,
+                      border: '1px solid var(--border)',
+                      background: 'var(--bg-input)',
+                      color: 'var(--text-bright)',
+                      resize: 'vertical',
+                      opacity: files.length > 0 ? 0.5 : 1,
+                    }}
+                  />
                 </div>
                 {error && <div style={{ color: 'var(--rose-bright)', fontSize: 13 }}>{error}</div>}
                 <div>
@@ -401,7 +509,18 @@ function StudentsTab({ students, classId, classContexts }) {
   const [expandedId, setExpandedId] = useState(null)
 
   if (students.length === 0) {
-    return <EmptyPanel title="No students enrolled" sub="Share the class id so students can join from their portal." />
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 18, padding: '40px 20px' }}>
+        <div style={{ fontSize: 40 }}>👥</div>
+        <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-bright)' }}>No students enrolled yet</div>
+        <p style={{ maxWidth: 460, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13.5, lineHeight: 1.55 }}>
+          Share the class code below with your students. They'll paste it into their AI Guard portal to join this class.
+        </p>
+        <div style={{ maxWidth: 380, width: '100%' }}>
+          <ClassCodeCard classId={classId} />
+        </div>
+      </div>
+    )
   }
 
   return (
