@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { motion, AnimatePresence, LayoutGroup } from 'framer-motion'
 import {
-  listClasses, joinClass, getStudentClasses, getClass,
+  joinClass, getStudentClasses, getClass,
   submitWork, evaluateAnswer, listSubmissions,
 } from '../api'
 import Logo from '../components/Logo'
@@ -19,18 +19,16 @@ import { burst, cannons, fireworks, shake } from '../components/Confetti'
 export default function Dashboard({ student, onLogout }) {
   const [tab, setTab] = useState('submit')
   const [myClasses, setMyClasses] = useState([])
-  const [allClasses, setAllClasses] = useState([])
   const [stats, setStats] = useState({ submissions: 0, passed: 0 })
   const [joinError, setJoinError] = useState('')
+  const [joinBusy, setJoinBusy] = useState(false)
 
   const fetchData = async () => {
     try {
-      const [classes, mine, subs] = await Promise.all([
-        listClasses(),
+      const [mine, subs] = await Promise.all([
         getStudentClasses(student.student_id),
         listSubmissions(student.student_id).catch(() => []),
       ])
-      setAllClasses(classes)
       setMyClasses(mine)
       const passed = (subs || []).filter(s => s.quiz_results?.passed === s.quiz_results?.total).length
       setStats({ submissions: (subs || []).length, passed })
@@ -39,25 +37,31 @@ export default function Dashboard({ student, onLogout }) {
 
   useEffect(() => { fetchData() }, [])
 
-  const handleJoin = async (classId) => {
-    setJoinError('')
+  // Join a class using the code the professor shared. The code is the class_id;
+  // students never browse the class catalog.
+  const handleJoin = async (rawCode) => {
+    const code = (rawCode || '').trim()
+    if (!code) { setJoinError('Enter the class code your professor shared'); return false }
+    setJoinError(''); setJoinBusy(true)
     try {
-      await joinClass(classId, student.student_id)
-      fetchData()
-    } catch (e) { setJoinError(e.message) }
+      await joinClass(code, student.student_id)
+      await fetchData()
+      setJoinBusy(false)
+      return true
+    } catch (e) {
+      const msg = /not found/i.test(e.message)
+        ? "That code doesn't match any class. Double-check with your professor."
+        : e.message
+      setJoinError(msg)
+      setJoinBusy(false)
+      return false
+    }
   }
 
-  const myClassIds = new Set(myClasses.map(c => c.class_id))
-  const availableClasses = allClasses.filter(c => !myClassIds.has(c.class_id))
-
-  const tabs = useMemo(() => {
-    const t = [
-      { id: 'submit', label: 'Submit Work', icon: '↑' },
-      { id: 'history', label: 'History', icon: '⟲' },
-    ]
-    if (availableClasses.length > 0 && myClasses.length > 0) t.push({ id: 'join', label: 'Join Classes', icon: '+' })
-    return t
-  }, [availableClasses.length, myClasses.length])
+  const tabs = useMemo(() => [
+    { id: 'submit', label: 'Submit Work', icon: '↑' },
+    { id: 'history', label: 'History', icon: '⟲' },
+  ], [])
 
   return (
     <div style={{ position: 'relative', minHeight: '100vh' }}>
@@ -101,11 +105,7 @@ export default function Dashboard({ student, onLogout }) {
       <div className="page">
         {/* Class membership gate */}
         {myClasses.length === 0 ? (
-          <EmptyClassCard
-            availableClasses={availableClasses}
-            onJoin={handleJoin}
-            joinError={joinError}
-          />
+          <EmptyClassCard onJoin={handleJoin} joinError={joinError} joinBusy={joinBusy} />
         ) : (
           <>
             {/* Class chips */}
@@ -130,7 +130,7 @@ export default function Dashboard({ student, onLogout }) {
                   {c.name}
                 </motion.span>
               ))}
-              {availableClasses.length > 0 && <JoinDropdown classes={availableClasses} onJoin={handleJoin} />}
+              <JoinByCodePopover onJoin={handleJoin} error={joinError} busy={joinBusy} />
             </motion.div>
 
             {/* Tabs — animated sliding indicator */}
@@ -146,11 +146,6 @@ export default function Dashboard({ student, onLogout }) {
                 {tab === 'history' && (
                   <motion.div key="history" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} transition={{ duration: 0.3 }}>
                     <HistoryTab student={student} />
-                  </motion.div>
-                )}
-                {tab === 'join' && (
-                  <motion.div key="join" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} transition={{ duration: 0.3 }}>
-                    <JoinClassesTab classes={availableClasses} onJoin={handleJoin} error={joinError} />
                   </motion.div>
                 )}
               </AnimatePresence>
@@ -199,9 +194,16 @@ function AnimatedTabs({ tabs, active, onChange }) {
 }
 
 /* ============================================================
-   Empty-state welcome card
+   Empty-state welcome card — student enters a class code from their professor.
+   Rewritten from a browse-all-classes list to a code-entry form so students
+   can only join classes they've been explicitly invited to (privacy fix).
    ============================================================ */
-function EmptyClassCard({ availableClasses, onJoin, joinError }) {
+function EmptyClassCard({ onJoin, joinError, joinBusy }) {
+  const [code, setCode] = useState('')
+  const submit = async (e) => {
+    e?.preventDefault?.()
+    await onJoin(code)
+  }
   return (
     <motion.div
       initial={{ opacity: 0, y: 20, scale: 0.98 }}
@@ -214,115 +216,115 @@ function EmptyClassCard({ availableClasses, onJoin, joinError }) {
       <h2 style={{ fontSize: 26, fontWeight: 800, color: 'var(--text-bright)', marginBottom: 8 }}>
         Welcome to <span className="gradient-text">AI Guard</span>
       </h2>
-      <p style={{ color: 'var(--text-muted)', fontSize: 14.5, marginBottom: 28, maxWidth: 420, margin: '0 auto 28px' }}>
-        Join a class to start submitting work. Your professor will share a class code or invite you.
+      <p style={{ color: 'var(--text-muted)', fontSize: 14.5, marginBottom: 24, maxWidth: 460, margin: '0 auto 24px', lineHeight: 1.55 }}>
+        Enter the <strong style={{ color: 'var(--text-bright)' }}>class code</strong> your professor shared with you to join their class and start submitting work.
       </p>
 
-      {availableClasses.length === 0 ? (
-        <div style={{ padding: 20, borderRadius: 14, background: 'var(--bg-input)', border: '1px dashed var(--border)', color: 'var(--text-dim)', fontSize: 13 }}>
-          No classes available yet — ask your professor to create one.
-        </div>
-      ) : (
-        <div className="stack-sm" style={{ maxWidth: 440, margin: '0 auto' }}>
-          {availableClasses.map((c, i) => (
-            <motion.div
-              key={c.class_id}
-              initial={{ opacity: 0, x: -10 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: i * 0.05 }}
-              whileHover={{ scale: 1.02, y: -2 }}
-              style={{
-                padding: '14px 18px', borderRadius: 12,
-                background: 'var(--bg-input)',
-                border: '1px solid var(--border)',
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              }}
-            >
-              <span style={{ fontWeight: 600, color: 'var(--text-bright)' }}>{c.name}</span>
-              <MagneticButton className="btn btn-primary" style={{ padding: '8px 16px', fontSize: 12 }}
-                onClick={() => onJoin(c.class_id)}>
-                Join →
-              </MagneticButton>
-            </motion.div>
-          ))}
-        </div>
-      )}
-      {joinError && <div style={{ color: 'var(--rose-bright)', fontSize: 13, marginTop: 12 }}>{joinError}</div>}
+      <form onSubmit={submit} style={{ maxWidth: 380, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <input
+          value={code}
+          onChange={e => setCode(e.target.value)}
+          placeholder="e.g. a1b2c3d4"
+          autoFocus
+          spellCheck={false}
+          autoCapitalize="none"
+          style={{
+            fontFamily: "'JetBrains Mono', monospace",
+            fontSize: 16,
+            textAlign: 'center',
+            letterSpacing: '0.06em',
+          }}
+        />
+        {joinError && (
+          <div style={{
+            color: 'var(--rose-bright)',
+            fontSize: 13,
+            padding: '8px 12px',
+            borderRadius: 8,
+            background: 'var(--rose-soft)',
+            border: '1px solid rgba(244,63,94,0.3)',
+          }}>{joinError}</div>
+        )}
+        <MagneticButton
+          className="btn btn-primary"
+          disabled={joinBusy || !code.trim()}
+          style={{ width: '100%', padding: '12px 20px', fontSize: 14 }}
+        >
+          {joinBusy ? 'Joining…' : 'Join class →'}
+        </MagneticButton>
+      </form>
+
+      <div style={{ marginTop: 22, fontSize: 12, color: 'var(--text-dim)' }}>
+        Your professor can find the code at the top of their class dashboard.
+      </div>
     </motion.div>
   )
 }
 
-function JoinDropdown({ classes, onJoin }) {
+/* Small popover on the enrolled-in strip for joining an additional class. */
+function JoinByCodePopover({ onJoin, error, busy }) {
   const [open, setOpen] = useState(false)
+  const [code, setCode] = useState('')
+  const submit = async (e) => {
+    e.preventDefault()
+    const ok = await onJoin(code)
+    if (ok) { setCode(''); setOpen(false) }
+  }
   return (
     <div style={{ position: 'relative' }}>
       <button
+        type="button"
         className="btn btn-ghost"
-        onClick={() => setOpen(!open)}
+        onClick={() => setOpen(v => !v)}
         style={{
           fontSize: 12, padding: '4px 12px', borderRadius: 999,
           border: '1px dashed var(--border-strong)', color: 'var(--violet-bright)',
         }}
       >
-        + Join more
+        + Join another class
       </button>
       <AnimatePresence>
         {open && (
-          <motion.div
+          <motion.form
+            onSubmit={submit}
             initial={{ opacity: 0, y: -6 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -6 }}
             style={{
               position: 'absolute', top: '100%', left: 0, zIndex: 10,
-              marginTop: 6, minWidth: 220,
+              marginTop: 6, width: 280,
               background: 'var(--bg-card-solid)',
               backdropFilter: 'blur(24px)',
               border: '1px solid var(--border-strong)',
-              borderRadius: 12, padding: 6,
+              borderRadius: 12, padding: 12,
               boxShadow: 'var(--shadow-lg)',
+              display: 'flex', flexDirection: 'column', gap: 8,
             }}
           >
-            {classes.map(c => (
-              <button key={c.class_id} className="btn btn-ghost"
-                style={{ width: '100%', justifyContent: 'flex-start', fontSize: 13, padding: '8px 12px' }}
-                onClick={() => { onJoin(c.class_id); setOpen(false) }}>
-                {c.name}
-              </button>
-            ))}
-          </motion.div>
+            <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-dim)' }}>
+              Enter class code
+            </div>
+            <input
+              value={code}
+              onChange={e => setCode(e.target.value)}
+              placeholder="e.g. a1b2c3d4"
+              autoFocus
+              spellCheck={false}
+              autoCapitalize="none"
+              style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 14, textAlign: 'center' }}
+            />
+            {error && <div style={{ color: 'var(--rose-bright)', fontSize: 12 }}>{error}</div>}
+            <button
+              type="submit"
+              className="btn btn-primary"
+              disabled={busy || !code.trim()}
+              style={{ padding: '8px 12px', fontSize: 13 }}
+            >
+              {busy ? 'Joining…' : 'Join'}
+            </button>
+          </motion.form>
         )}
       </AnimatePresence>
-    </div>
-  )
-}
-
-function JoinClassesTab({ classes, onJoin, error }) {
-  return (
-    <div className="card">
-      <h3 style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-bright)', marginBottom: 14 }}>Available Classes</h3>
-      {error && <div style={{ color: 'var(--rose-bright)', fontSize: 13, marginBottom: 8 }}>{error}</div>}
-      <div className="stack-sm">
-        {classes.map((c, i) => (
-          <motion.div
-            key={c.class_id}
-            initial={{ opacity: 0, x: -8 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: i * 0.04 }}
-            style={{
-              padding: '14px 18px', borderRadius: 12,
-              background: 'var(--bg-input)',
-              border: '1px solid var(--border)',
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-            }}
-          >
-            <span style={{ fontWeight: 600, color: 'var(--text-bright)', fontSize: 14 }}>{c.name}</span>
-            <MagneticButton className="btn btn-primary" style={{ padding: '8px 16px', fontSize: 12 }}
-              onClick={() => onJoin(c.class_id)}>
-              Join Class →
-            </MagneticButton>
-          </motion.div>
-        ))}
-      </div>
     </div>
   )
 }
